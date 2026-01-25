@@ -30,11 +30,11 @@ export async function loader({ request }) {
   }
 
   // Build GraphQL query string for Shopify product search
-  // Search by product title, variant SKU, or barcode
+  // Search by product title, variant SKU, barcode, or vendor
   let graphqlQuery = "";
   if (sanitizedQuery) {
     // Use sanitized input with wildcards applied by us (not user-controlled)
-    graphqlQuery = `title:*${sanitizedQuery}* OR sku:*${sanitizedQuery}* OR barcode:*${sanitizedQuery}*`;
+    graphqlQuery = `title:*${sanitizedQuery}* OR sku:*${sanitizedQuery}* OR barcode:*${sanitizedQuery}* OR vendor:*${sanitizedQuery}*`;
   }
 
   // Fetch products with variants
@@ -56,6 +56,7 @@ export async function loader({ request }) {
       variantRows.push({
         id: variant.id,
         productTitle: product.title,
+        vendor: product.vendor || "",
         variantTitle: variant.title,
         displayName: variant.displayName,
         sku: variant.sku || "N/A",
@@ -85,6 +86,50 @@ export default function ExportPage() {
   const [selectedIds, setSelectedIds] = useState([]);
   const [searchInput, setSearchInput] = useState(searchQuery || "");
   const debounceTimer = useRef(null);
+  const [labelQuantities, setLabelQuantities] = useState({});
+
+  // Get effective quantity (uses default if not customized)
+  const getEffectiveQuantity = (variantId, variant) => {
+    return labelQuantities[variantId] ?? (variant?.inventoryQuantity || 0);
+  };
+
+  // Update quantity for a variant with validation
+  const handleQuantityChange = (variantId, value) => {
+    const numValue = parseInt(value, 10);
+
+    if (isNaN(numValue) || numValue < 0) return;
+
+    if (numValue > 1000) {
+      shopify.toast.show("Maximum quantity is 1000 labels per variant", {
+        isError: true,
+      });
+      return;
+    }
+
+    if (numValue > 100) {
+      shopify.toast.show("Large quantity detected. Export may take a moment.");
+    }
+
+    setLabelQuantities(prev => ({
+      ...prev,
+      [variantId]: numValue
+    }));
+  };
+
+  // Reset all quantities to stock levels
+  const handleResetQuantities = () => {
+    setLabelQuantities({});
+    shopify.toast.show("Label quantities reset to stock levels");
+  };
+
+  // Reset single quantity to stock level
+  const handleResetSingleQuantity = (variantId) => {
+    setLabelQuantities(prev => {
+      const updated = { ...prev };
+      delete updated[variantId];
+      return updated;
+    });
+  };
 
   const handleSelectAll = (e) => {
     if (e.target.checked) {
@@ -140,37 +185,56 @@ export default function ExportPage() {
       selectedIds.includes(v.id)
     );
 
+    // Calculate total labels before export
+    const totalLabels = selectedVariants.reduce((sum, variant) => {
+      const qty = getEffectiveQuantity(variant.id, variant);
+      return sum + qty;
+    }, 0);
+
+    // Validate that at least one label will be exported
+    if (totalLabels === 0) {
+      shopify.toast.show("Cannot export: All selected variants have 0 quantity. Please set label quantities before exporting.", {
+        isError: true,
+      });
+      return;
+    }
+
     // Build worksheet data - formatted for label printing
     const wsData = [];
 
     // Header row
     wsData.push([
       "Product Name",
-      "Variant",
-      "SKU",
+      "Size",
       "Barcode",
       "Price",
     ]);
 
-    // Data rows
+    // Data rows - duplicate each variant based on its label quantity
     selectedVariants.forEach((variant) => {
-      wsData.push([
-        variant.productTitle,
-        variant.variantTitle || "Default",
-        variant.sku || "",
-        variant.barcode || "",
-        variant.price || "0.00",
-      ]);
+      const quantity = getEffectiveQuantity(variant.id, variant);
+
+      if (quantity === 0) return; // Skip variants with 0 quantity
+
+      // Add N rows for this variant (one row per label)
+      for (let i = 0; i < quantity; i++) {
+        wsData.push([
+          variant.productTitle,
+          variant.variantTitle || "Default",
+          variant.barcode || "",
+          `$${variant.price || "0.00"}`,
+        ]);
+      }
     });
 
     // Create worksheet
     const ws = XLSX.utils.aoa_to_sheet(wsData);
 
     // Format barcode column as text to prevent scientific notation
-    // Column D (index 3) is the Barcode column
+    // Column C (index 2) is the Barcode column
     const range = XLSX.utils.decode_range(ws["!ref"]);
     for (let row = 1; row <= range.e.r; row++) {
-      const cellAddress = XLSX.utils.encode_cell({ r: row, c: 3 }); // Column D (Barcode)
+      const cellAddress = XLSX.utils.encode_cell({ r: row, c: 2 }); // Column C (Barcode)
       if (ws[cellAddress]) {
         ws[cellAddress].t = "s"; // Set cell type to string
       }
@@ -179,8 +243,7 @@ export default function ExportPage() {
     // Set column widths for better readability
     ws["!cols"] = [
       { wch: 30 }, // Product Name
-      { wch: 20 }, // Variant
-      { wch: 15 }, // SKU
+      { wch: 20 }, // Size
       { wch: 20 }, // Barcode
       { wch: 10 }, // Price
     ];
@@ -205,7 +268,7 @@ export default function ExportPage() {
     window.URL.revokeObjectURL(url);
     document.body.removeChild(a);
 
-    shopify.toast.show(`Exported ${selectedIds.length} variants successfully`);
+    shopify.toast.show(`Exported ${totalLabels} label${totalLabels !== 1 ? 's' : ''} successfully`);
   };
 
   return (
@@ -216,7 +279,26 @@ export default function ExportPage() {
         onClick={handleExport}
         {...(selectedIds.length === 0 ? { disabled: true } : {})}
       >
-        Export {selectedIds.length} Selected
+        {(() => {
+          if (selectedIds.length === 0) return "Export Selected";
+
+          const totalLabels = selectedIds.reduce((sum, id) => {
+            const variant = variants.find(v => v.id === id);
+            const qty = getEffectiveQuantity(id, variant);
+            return sum + qty;
+          }, 0);
+
+          return `Export ${totalLabels} Label${totalLabels !== 1 ? 's' : ''} (${selectedIds.length} variant${selectedIds.length !== 1 ? 's' : ''})`;
+        })()}
+      </s-button>
+
+      <s-button
+        slot="secondary-actions"
+        variant="secondary"
+        onClick={handleResetQuantities}
+        {...(Object.keys(labelQuantities).length === 0 ? { disabled: true } : {})}
+      >
+        Reset All Quantities
       </s-button>
 
       <s-section>
@@ -229,7 +311,7 @@ export default function ExportPage() {
         <div style={{ marginBottom: "16px" }}>
           <input
             type="text"
-            placeholder="Search by product name, SKU, or barcode..."
+            placeholder="Search by product name, SKU, barcode, or vendor..."
             value={searchInput}
             onChange={handleSearchChange}
             style={{
@@ -271,6 +353,9 @@ export default function ExportPage() {
                     Product Name
                   </th>
                   <th style={{ padding: "12px 8px", textAlign: "left" }}>
+                    Vendor
+                  </th>
+                  <th style={{ padding: "12px 8px", textAlign: "left" }}>
                     SKU
                   </th>
                   <th style={{ padding: "12px 8px", textAlign: "left" }}>
@@ -278,6 +363,9 @@ export default function ExportPage() {
                   </th>
                   <th style={{ padding: "12px 8px", textAlign: "left" }}>
                     Stock
+                  </th>
+                  <th style={{ padding: "12px 8px", textAlign: "left" }}>
+                    Label Qty
                   </th>
                   <th style={{ padding: "12px 8px", textAlign: "left" }}>
                     Price
@@ -342,12 +430,52 @@ export default function ExportPage() {
                           )}
                       </div>
                     </td>
+                    <td style={{ padding: "12px 8px" }}>
+                      {variant.vendor || "—"}
+                    </td>
                     <td style={{ padding: "12px 8px" }}>{variant.sku}</td>
                     <td style={{ padding: "12px 8px" }}>
                       {variant.barcode || "—"}
                     </td>
                     <td style={{ padding: "12px 8px" }}>
                       {variant.inventoryQuantity}
+                    </td>
+                    <td style={{ padding: "12px 8px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                        <input
+                          type="number"
+                          min="0"
+                          max="1000"
+                          value={getEffectiveQuantity(variant.id, variant)}
+                          onChange={(e) => handleQuantityChange(variant.id, e.target.value)}
+                          aria-label={`Label quantity for ${variant.displayName}`}
+                          style={{
+                            width: "60px",
+                            padding: "4px 8px",
+                            fontSize: "14px",
+                            border: "1px solid #c9cccf",
+                            borderRadius: "4px",
+                            textAlign: "center",
+                          }}
+                        />
+                        {labelQuantities[variant.id] !== undefined && (
+                          <button
+                            onClick={() => handleResetSingleQuantity(variant.id)}
+                            style={{
+                              padding: "2px 6px",
+                              fontSize: "11px",
+                              color: "#5c6ac4",
+                              background: "none",
+                              border: "none",
+                              cursor: "pointer",
+                              textDecoration: "underline",
+                            }}
+                            title="Reset to stock quantity"
+                          >
+                            ↺
+                          </button>
+                        )}
+                      </div>
                     </td>
                     <td style={{ padding: "12px 8px" }}>${variant.price}</td>
                   </tr>

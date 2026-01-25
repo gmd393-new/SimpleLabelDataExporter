@@ -10,6 +10,7 @@ export const PRODUCTS_QUERY = `#graphql
         node {
           id
           title
+          vendor
           featuredImage {
             url
             altText
