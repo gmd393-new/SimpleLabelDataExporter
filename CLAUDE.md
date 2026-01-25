@@ -153,3 +153,52 @@ All app routes use `authenticate.admin(request)` from `app/shopify.server.js` to
 - Verify the session is valid
 - Provide access to the Admin GraphQL API via `admin.graphql()`
 - Handle OAuth flow automatically
+
+## Deployment Architecture
+
+This app uses a **three-tier deployment strategy**:
+
+1. **Development**: Local development with SQLite database
+2. **Staging**: fly.io deployment for testing (simplelabeldataexporter.fly.dev)
+3. **Production**: fly.io deployment serving all customers (simplelabels-prod.fly.dev)
+
+### Environment Overview
+
+| Environment | Database | URL | Purpose |
+|------------|----------|-----|---------|
+| Development | SQLite | localhost (via tunnel) | Active development |
+| Staging | PostgreSQL | simplelabeldataexporter.fly.dev | Pre-production testing |
+| Production | PostgreSQL | simplelabels-prod.fly.dev | Customer deployments |
+
+### Multi-Tenant Production
+
+Production uses a **single shared deployment** for all customers:
+- Each customer gets a custom Shopify app installed in their store
+- All custom apps point to the same production URL
+- Sessions are isolated by the `shop` field in the database
+- Access tokens are shop-specific, preventing cross-customer data access
+
+### Documentation Files
+
+For detailed information, see:
+
+- **[DEVELOPMENT.md](./DEVELOPMENT.md)** - Local development setup and workflow
+- **[DEPLOYMENT.md](./DEPLOYMENT.md)** - Deploying to staging and production
+- **[CUSTOMER_ONBOARDING.md](./CUSTOMER_ONBOARDING.md)** - Adding new customers to production
+- **[DEPLOYMENT_STRATEGY.md](./DEPLOYMENT_STRATEGY.md)** - Architecture overview and quick reference
+
+### Quick Commands
+
+```bash
+# Development
+shopify app dev                                           # Start local dev server
+
+# Staging Deployment
+flyctl deploy                                             # Deploy to staging
+
+# Production Deployment
+flyctl deploy --config fly.production.toml --app simplelabels-prod
+
+# Database Access
+flyctl postgres connect --app simplelabels-prod-db       # Connect to production DB
+```
