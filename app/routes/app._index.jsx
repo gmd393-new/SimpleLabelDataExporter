@@ -77,6 +77,81 @@ export async function loader({ request }) {
 }
 
 /**
+ * Action: Handles server-side Excel export
+ */
+export async function action({ request }) {
+  const formData = await request.formData();
+  const exportDataJson = formData.get("exportData");
+
+  if (!exportDataJson) {
+    return new Response("No export data provided", { status: 400 });
+  }
+
+  const exportData = JSON.parse(exportDataJson);
+
+  // Build worksheet data - formatted for label printing
+  const wsData = [];
+
+  // Header row
+  wsData.push([
+    "Product Name",
+    "Size",
+    "Barcode",
+    "Price",
+  ]);
+
+  // Data rows - duplicate each variant based on its label quantity
+  exportData.forEach((item) => {
+    wsData.push([
+      item.productTitle,
+      item.variantTitle || "Default",
+      item.barcode || "",
+      `$${item.price || "0.00"}`,
+    ]);
+  });
+
+  // Create worksheet
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+  // Format barcode column as text to prevent scientific notation
+  // Column C (index 2) is the Barcode column
+  const range = XLSX.utils.decode_range(ws["!ref"]);
+  for (let row = 1; row <= range.e.r; row++) {
+    const cellAddress = XLSX.utils.encode_cell({ r: row, c: 2 }); // Column C (Barcode)
+    if (ws[cellAddress]) {
+      ws[cellAddress].t = "s"; // Set cell type to string
+    }
+  }
+
+  // Set column widths for better readability
+  ws["!cols"] = [
+    { wch: 30 }, // Product Name
+    { wch: 20 }, // Size
+    { wch: 20 }, // Barcode
+    { wch: 10 }, // Price
+  ];
+
+  // Create workbook
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Labels");
+
+  // Generate XLSX file as buffer
+  const wbout = XLSX.write(wb, { bookType: "xlsx", type: "buffer" });
+
+  // Return file as download
+  const fileName = `label-export-${new Date().toISOString().split("T")[0]}.xlsx`;
+
+  return new Response(wbout, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "Content-Disposition": `attachment; filename="${fileName}"`,
+      "Content-Length": wbout.length.toString(),
+    },
+  });
+}
+
+/**
  * Component: Product selection table with export functionality
  */
 export default function ExportPage() {
@@ -199,18 +274,8 @@ export default function ExportPage() {
       return;
     }
 
-    // Build worksheet data - formatted for label printing
-    const wsData = [];
-
-    // Header row
-    wsData.push([
-      "Product Name",
-      "Size",
-      "Barcode",
-      "Price",
-    ]);
-
-    // Data rows - duplicate each variant based on its label quantity
+    // Build export data array - duplicate each variant based on its label quantity
+    const exportData = [];
     selectedVariants.forEach((variant) => {
       const quantity = getEffectiveQuantity(variant.id, variant);
 
@@ -218,57 +283,32 @@ export default function ExportPage() {
 
       // Add N rows for this variant (one row per label)
       for (let i = 0; i < quantity; i++) {
-        wsData.push([
-          variant.productTitle,
-          variant.variantTitle || "Default",
-          variant.barcode || "",
-          `$${variant.price || "0.00"}`,
-        ]);
+        exportData.push({
+          productTitle: variant.productTitle,
+          variantTitle: variant.variantTitle,
+          barcode: variant.barcode,
+          price: variant.price,
+        });
       }
     });
 
-    // Create worksheet
-    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    // Create a hidden form to submit the export data
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = window.location.pathname;
+    form.target = "_blank"; // Open in new window to trigger download
 
-    // Format barcode column as text to prevent scientific notation
-    // Column C (index 2) is the Barcode column
-    const range = XLSX.utils.decode_range(ws["!ref"]);
-    for (let row = 1; row <= range.e.r; row++) {
-      const cellAddress = XLSX.utils.encode_cell({ r: row, c: 2 }); // Column C (Barcode)
-      if (ws[cellAddress]) {
-        ws[cellAddress].t = "s"; // Set cell type to string
-      }
-    }
+    const input = document.createElement("input");
+    input.type = "hidden";
+    input.name = "exportData";
+    input.value = JSON.stringify(exportData);
 
-    // Set column widths for better readability
-    ws["!cols"] = [
-      { wch: 30 }, // Product Name
-      { wch: 20 }, // Size
-      { wch: 20 }, // Barcode
-      { wch: 10 }, // Price
-    ];
+    form.appendChild(input);
+    document.body.appendChild(form);
+    form.submit();
+    document.body.removeChild(form);
 
-    // Create workbook
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Labels");
-
-    // Generate XLSX file
-    const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-
-    // Create blob and trigger download
-    const blob = new Blob([wbout], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `label-export-${new Date().toISOString().split("T")[0]}.xlsx`;
-    document.body.appendChild(a);
-    a.click();
-    window.URL.revokeObjectURL(url);
-    document.body.removeChild(a);
-
-    shopify.toast.show(`Exported ${totalLabels} label${totalLabels !== 1 ? 's' : ''} successfully`);
+    shopify.toast.show(`Exporting ${totalLabels} label${totalLabels !== 1 ? 's' : ''}...`);
   };
 
   return (
