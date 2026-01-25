@@ -15,12 +15,26 @@ export async function loader({ request }) {
   const url = new URL(request.url);
   const searchQuery = url.searchParams.get("search") || "";
 
+  // Sanitize and validate search input
+  let sanitizedQuery = "";
+  if (searchQuery) {
+    // Limit length to prevent DoS
+    const trimmedQuery = searchQuery.trim().substring(0, 100);
+
+    // Sanitize: escape special GraphQL query characters
+    // Remove characters that could be used for query injection: *, ", :, OR, AND, NOT, parentheses
+    sanitizedQuery = trimmedQuery
+      .replace(/[*"():]/g, '') // Remove special query operators
+      .replace(/\b(OR|AND|NOT)\b/gi, '') // Remove boolean operators
+      .trim();
+  }
+
   // Build GraphQL query string for Shopify product search
   // Search by product title, variant SKU, or barcode
   let graphqlQuery = "";
-  if (searchQuery) {
-    // Shopify search syntax: title, sku, or barcode
-    graphqlQuery = `title:*${searchQuery}* OR sku:*${searchQuery}* OR barcode:*${searchQuery}*`;
+  if (sanitizedQuery) {
+    // Use sanitized input with wildcards applied by us (not user-controlled)
+    graphqlQuery = `title:*${sanitizedQuery}* OR sku:*${sanitizedQuery}* OR barcode:*${sanitizedQuery}*`;
   }
 
   // Fetch products with variants
