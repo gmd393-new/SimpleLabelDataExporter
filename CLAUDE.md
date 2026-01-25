@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository Overview
 
-**Niimbot Exporter** is a Shopify App built with React Router (Remix framework) that allows merchants to select products/variants from their inventory and export them as an Excel file (.xlsx) formatted specifically for the Niimbot label printing application.
+**Simple Exporter for Labels** is a Shopify App built with React Router (Remix framework) that allows merchants to select products/variants from their inventory and export them as an Excel file (.xlsx) formatted for label printing applications.
 
 ## Development Commands
 
@@ -36,18 +36,27 @@ npm run lint
 
 ### Key Files
 
-**Navigation** (`app/routes/app.jsx`)
-- Defines app navigation in `<s-app-nav>` component
-- Add new routes here to make them accessible in the app sidebar
+**App Layout** (`app/routes/app.jsx`)
+- Provides AppProvider wrapper for embedded app authentication
+- No navigation menu (single-page app)
 
 **GraphQL Queries** (`app/graphql/products.js`)
 - `PRODUCTS_QUERY`: Fetches products with variants including barcode, SKU, price, and inventory data
-- Verified against Shopify Admin GraphQL API schema
+- Supports search filtering via `$query` parameter
+- Search syntax: `title:*term* OR sku:*term* OR barcode:*term*`
 
-**Export Route** (`app/routes/app.export.jsx`)
-- **Loader**: Fetches product/variant data via GraphQL and flattens for table display
-- **Component**: Uses Polaris web components and custom HTML table with multi-select functionality
-- **Download Mechanism**: Client-side XLSX generation using SheetJS library and Blob API to avoid App Bridge iframe restrictions
+**Main Route** (`app/routes/app._index.jsx`)
+- **Loader**:
+  - Fetches product/variant data via GraphQL
+  - Handles `?search=` query parameter for product filtering
+  - Returns up to 50 products per search
+- **Component**:
+  - Live search input with 500ms debouncing
+  - Product table with multi-select checkboxes
+  - Uses Polaris web components and custom HTML table
+- **Download Mechanism**:
+  - Client-side XLSX generation using SheetJS library
+  - Blob API to trigger downloads (avoids App Bridge iframe restrictions)
 - **Dependencies**: `xlsx` package for Excel file generation
 
 **Configuration** (`shopify.app.toml`)
@@ -63,13 +72,13 @@ Each row in the export table represents a **ProductVariant** (not a Product). Th
 
 ### Excel Export Format
 
-The XLSX file is formatted specifically for Niimbot label printers:
+The XLSX file is formatted for label printing:
 
 1. **Price**: Raw decimal number without currency symbols (e.g., `10.00` not `$10.00`)
 2. **Barcode**: Cell type set to "string" to prevent Excel from converting to scientific notation (prevents `123456789` from becoming `1.23E+08`)
 3. **Columns**: Product Name, Variant, SKU, Barcode, Price
 4. **Column Widths**: Auto-sized for readability
-5. **Filename**: Auto-generated with date stamp: `niimbot-labels-YYYY-MM-DD.xlsx`
+5. **Filename**: Auto-generated with date stamp: `label-export-YYYY-MM-DD.xlsx`
 6. **Library**: Uses SheetJS (xlsx) for client-side Excel generation
 
 ### GraphQL Field Reference
@@ -119,15 +128,18 @@ Source: [Shopify Community - How do I force a download with App Bridge?](https:/
 
 ### Adding New Routes
 
-To add a new route to the app:
+This is currently a single-page app with no navigation. To add additional routes:
 
 1. Create file in `app/routes/` following naming convention:
    - `app.routename.jsx` for routes accessible via `/app/routename`
-   - Use underscore prefix for routes without layout: `app._index.jsx`
+   - Use underscore prefix for index routes: `app._index.jsx`
 
-2. Add navigation link in `app/routes/app.jsx`:
+2. If multiple pages are needed, re-add navigation in `app/routes/app.jsx`:
    ```jsx
-   <s-link href="/app/routename">Route Name</s-link>
+   <s-app-nav>
+     <s-link href="/app">Home</s-link>
+     <s-link href="/app/routename">Route Name</s-link>
+   </s-app-nav>
    ```
 
 3. Export required functions:

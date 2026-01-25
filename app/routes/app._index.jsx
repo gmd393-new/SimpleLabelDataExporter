@@ -1,243 +1,354 @@
-import { useEffect } from "react";
-import { useFetcher } from "react-router";
+import { useLoaderData, useSubmit, Form } from "react-router";
+import { useState, useEffect, useRef } from "react";
 import { useAppBridge } from "@shopify/app-bridge-react";
-import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
+import { PRODUCTS_QUERY } from "../graphql/products";
+import * as XLSX from "xlsx";
 
-export const loader = async ({ request }) => {
-  await authenticate.admin(request);
-
-  return null;
-};
-
-export const action = async ({ request }) => {
+/**
+ * Loader: Fetches products and variants from Shopify Admin API
+ */
+export async function loader({ request }) {
   const { admin } = await authenticate.admin(request);
-  const color = ["Red", "Orange", "Yellow", "Green"][
-    Math.floor(Math.random() * 4)
-  ];
-  const response = await admin.graphql(
-    `#graphql
-      mutation populateProduct($product: ProductCreateInput!) {
-        productCreate(product: $product) {
-          product {
-            id
-            title
-            handle
-            status
-            variants(first: 10) {
-              edges {
-                node {
-                  id
-                  price
-                  barcode
-                  createdAt
-                }
-              }
-            }
-          }
-        }
-      }`,
-    {
-      variables: {
-        product: {
-          title: `${color} Snowboard`,
-        },
-      },
+
+  // Get search query from URL
+  const url = new URL(request.url);
+  const searchQuery = url.searchParams.get("search") || "";
+
+  // Build GraphQL query string for Shopify product search
+  // Search by product title, variant SKU, or barcode
+  let graphqlQuery = "";
+  if (searchQuery) {
+    // Shopify search syntax: title, sku, or barcode
+    graphqlQuery = `title:*${searchQuery}* OR sku:*${searchQuery}* OR barcode:*${searchQuery}*`;
+  }
+
+  // Fetch products with variants
+  const response = await admin.graphql(PRODUCTS_QUERY, {
+    variables: {
+      first: 50, // Fetch 50 products at a time
+      query: graphqlQuery || null,
     },
-  );
-  const responseJson = await response.json();
-  const product = responseJson.data.productCreate.product;
-  const variantId = product.variants.edges[0].node.id;
-  const variantResponse = await admin.graphql(
-    `#graphql
-    mutation shopifyReactRouterTemplateUpdateVariant($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-      productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-        productVariants {
-          id
-          price
-          barcode
-          createdAt
-        }
-      }
-    }`,
-    {
-      variables: {
-        productId: product.id,
-        variants: [{ id: variantId, price: "100.00" }],
-      },
-    },
-  );
-  const variantResponseJson = await variantResponse.json();
+  });
+
+  const data = await response.json();
+
+  // Flatten the data structure for easier rendering
+  // Each row represents a variant
+  const variantRows = [];
+
+  data.data.products.edges.forEach(({ node: product }) => {
+    product.variants.edges.forEach(({ node: variant }) => {
+      variantRows.push({
+        id: variant.id,
+        productTitle: product.title,
+        variantTitle: variant.title,
+        displayName: variant.displayName,
+        sku: variant.sku || "N/A",
+        barcode: variant.barcode || "",
+        price: variant.price,
+        inventoryQuantity: variant.inventoryQuantity || 0,
+        image: product.featuredImage?.url || null,
+        imageAlt: product.featuredImage?.altText || product.title,
+      });
+    });
+  });
 
   return {
-    product: responseJson.data.productCreate.product,
-    variant: variantResponseJson.data.productVariantsBulkUpdate.productVariants,
+    variants: variantRows,
+    hasNextPage: data.data.products.pageInfo.hasNextPage,
+    searchQuery,
   };
-};
+}
 
-export default function Index() {
-  const fetcher = useFetcher();
+/**
+ * Component: Product selection table with export functionality
+ */
+export default function ExportPage() {
+  const { variants, searchQuery } = useLoaderData();
   const shopify = useAppBridge();
-  const isLoading =
-    ["loading", "submitting"].includes(fetcher.state) &&
-    fetcher.formMethod === "POST";
+  const submit = useSubmit();
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [searchInput, setSearchInput] = useState(searchQuery || "");
+  const debounceTimer = useRef(null);
 
-  useEffect(() => {
-    if (fetcher.data?.product?.id) {
-      shopify.toast.show("Product created");
+  const handleSelectAll = (e) => {
+    if (e.target.checked) {
+      setSelectedIds(variants.map((v) => v.id));
+    } else {
+      setSelectedIds([]);
     }
-  }, [fetcher.data?.product?.id, shopify]);
-  const generateProduct = () => fetcher.submit({}, { method: "POST" });
+  };
+
+  const handleSelectOne = (id) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((i) => i !== id) : [...prev, id]
+    );
+  };
+
+  // Handle search input with debouncing
+  const handleSearchChange = (e) => {
+    const value = e.target.value;
+    setSearchInput(value);
+
+    // Clear existing timer
+    if (debounceTimer.current) {
+      clearTimeout(debounceTimer.current);
+    }
+
+    // Set new timer to submit search after 500ms of no typing
+    debounceTimer.current = setTimeout(() => {
+      const formData = new FormData();
+      formData.append("search", value);
+      submit(formData, { method: "get" });
+    }, 500);
+  };
+
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceTimer.current) {
+        clearTimeout(debounceTimer.current);
+      }
+    };
+  }, []);
+
+  const handleExport = () => {
+    if (selectedIds.length === 0) {
+      shopify.toast.show("Please select at least one variant to export", {
+        isError: true,
+      });
+      return;
+    }
+
+    // Get selected variants from loaded data
+    const selectedVariants = variants.filter((v) =>
+      selectedIds.includes(v.id)
+    );
+
+    // Build worksheet data - formatted for label printing
+    const wsData = [];
+
+    // Header row
+    wsData.push([
+      "Product Name",
+      "Variant",
+      "SKU",
+      "Barcode",
+      "Price",
+    ]);
+
+    // Data rows
+    selectedVariants.forEach((variant) => {
+      wsData.push([
+        variant.productTitle,
+        variant.variantTitle || "Default",
+        variant.sku || "",
+        variant.barcode || "",
+        variant.price || "0.00",
+      ]);
+    });
+
+    // Create worksheet
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+    // Format barcode column as text to prevent scientific notation
+    // Column D (index 3) is the Barcode column
+    const range = XLSX.utils.decode_range(ws["!ref"]);
+    for (let row = 1; row <= range.e.r; row++) {
+      const cellAddress = XLSX.utils.encode_cell({ r: row, c: 3 }); // Column D (Barcode)
+      if (ws[cellAddress]) {
+        ws[cellAddress].t = "s"; // Set cell type to string
+      }
+    }
+
+    // Set column widths for better readability
+    ws["!cols"] = [
+      { wch: 30 }, // Product Name
+      { wch: 20 }, // Variant
+      { wch: 15 }, // SKU
+      { wch: 20 }, // Barcode
+      { wch: 10 }, // Price
+    ];
+
+    // Create workbook
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Labels");
+
+    // Generate XLSX file
+    const wbout = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+
+    // Create blob and trigger download
+    const blob = new Blob([wbout], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `label-export-${new Date().toISOString().split("T")[0]}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    document.body.removeChild(a);
+
+    shopify.toast.show(`Exported ${selectedIds.length} variants successfully`);
+  };
 
   return (
-    <s-page heading="Shopify app template">
-      <s-button slot="primary-action" onClick={generateProduct}>
-        Generate a product
+    <s-page heading="Simple Exporter for Labels">
+      <s-button
+        slot="primary-action"
+        variant="primary"
+        onClick={handleExport}
+        {...(selectedIds.length === 0 ? { disabled: true } : {})}
+      >
+        Export {selectedIds.length} Selected
       </s-button>
 
-      <s-section heading="Congrats on creating a new Shopify app 🎉">
+      <s-section>
         <s-paragraph>
-          This embedded app template uses{" "}
-          <s-link
-            href="https://shopify.dev/docs/apps/tools/app-bridge"
-            target="_blank"
-          >
-            App Bridge
-          </s-link>{" "}
-          interface examples like an{" "}
-          <s-link href="/app/additional">additional page in the app nav</s-link>
-          , as well as an{" "}
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql"
-            target="_blank"
-          >
-            Admin GraphQL
-          </s-link>{" "}
-          mutation demo, to provide a starting point for app development.
+          Select product variants below and click "Export" to download an Excel
+          file (.xlsx) formatted for label printing.
         </s-paragraph>
-      </s-section>
-      <s-section heading="Get started with products">
-        <s-paragraph>
-          Generate a product with GraphQL and get the JSON output for that
-          product. Learn more about the{" "}
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql/latest/mutations/productCreate"
-            target="_blank"
-          >
-            productCreate
-          </s-link>{" "}
-          mutation in our API references.
-        </s-paragraph>
-        <s-stack direction="inline" gap="base">
-          <s-button
-            onClick={generateProduct}
-            {...(isLoading ? { loading: true } : {})}
-          >
-            Generate a product
-          </s-button>
-          {fetcher.data?.product && (
-            <s-button
-              onClick={() => {
-                shopify.intents.invoke?.("edit:shopify/Product", {
-                  value: fetcher.data?.product?.id,
-                });
+
+        {/* Search input */}
+        <div style={{ marginBottom: "16px" }}>
+          <input
+            type="text"
+            placeholder="Search by product name, SKU, or barcode..."
+            value={searchInput}
+            onChange={handleSearchChange}
+            style={{
+              width: "100%",
+              padding: "10px 12px",
+              fontSize: "14px",
+              border: "1px solid #c9cccf",
+              borderRadius: "4px",
+              boxSizing: "border-box",
+            }}
+          />
+        </div>
+
+        <s-box padding="base" borderWidth="base" borderRadius="base">
+          <div style={{ overflowX: "auto" }}>
+            <table
+              style={{
+                width: "100%",
+                borderCollapse: "collapse",
+                fontSize: "14px",
               }}
-              target="_blank"
-              variant="tertiary"
             >
-              Edit product
-            </s-button>
-          )}
-        </s-stack>
-        {fetcher.data?.product && (
-          <s-section heading="productCreate mutation">
-            <s-stack direction="block" gap="base">
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <pre style={{ margin: 0 }}>
-                  <code>{JSON.stringify(fetcher.data.product, null, 2)}</code>
-                </pre>
-              </s-box>
+              <thead>
+                <tr style={{ borderBottom: "1px solid #e1e3e5" }}>
+                  <th style={{ padding: "12px 8px", textAlign: "left" }}>
+                    <input
+                      type="checkbox"
+                      onChange={handleSelectAll}
+                      checked={
+                        selectedIds.length === variants.length &&
+                        variants.length > 0
+                      }
+                    />
+                  </th>
+                  <th style={{ padding: "12px 8px", textAlign: "left" }}>
+                    Image
+                  </th>
+                  <th style={{ padding: "12px 8px", textAlign: "left" }}>
+                    Product Name
+                  </th>
+                  <th style={{ padding: "12px 8px", textAlign: "left" }}>
+                    SKU
+                  </th>
+                  <th style={{ padding: "12px 8px", textAlign: "left" }}>
+                    Barcode
+                  </th>
+                  <th style={{ padding: "12px 8px", textAlign: "left" }}>
+                    Stock
+                  </th>
+                  <th style={{ padding: "12px 8px", textAlign: "left" }}>
+                    Price
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {variants.map((variant) => (
+                  <tr
+                    key={variant.id}
+                    style={{
+                      borderBottom: "1px solid #e1e3e5",
+                      backgroundColor: selectedIds.includes(variant.id)
+                        ? "#f6f6f7"
+                        : "transparent",
+                    }}
+                  >
+                    <td style={{ padding: "12px 8px" }}>
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.includes(variant.id)}
+                        onChange={() => handleSelectOne(variant.id)}
+                      />
+                    </td>
+                    <td style={{ padding: "12px 8px" }}>
+                      {variant.image ? (
+                        <img
+                          src={variant.image}
+                          alt={variant.imageAlt}
+                          style={{
+                            width: "40px",
+                            height: "40px",
+                            objectFit: "cover",
+                            borderRadius: "4px",
+                          }}
+                        />
+                      ) : (
+                        <div
+                          style={{
+                            width: "40px",
+                            height: "40px",
+                            backgroundColor: "#e1e3e5",
+                            borderRadius: "4px",
+                          }}
+                        />
+                      )}
+                    </td>
+                    <td style={{ padding: "12px 8px" }}>
+                      <div>
+                        <strong>{variant.productTitle}</strong>
+                        {variant.variantTitle &&
+                          variant.variantTitle !== "Default Title" && (
+                            <div
+                              style={{
+                                fontSize: "12px",
+                                color: "#6d7175",
+                                marginTop: "4px",
+                              }}
+                            >
+                              {variant.variantTitle}
+                            </div>
+                          )}
+                      </div>
+                    </td>
+                    <td style={{ padding: "12px 8px" }}>{variant.sku}</td>
+                    <td style={{ padding: "12px 8px" }}>
+                      {variant.barcode || "—"}
+                    </td>
+                    <td style={{ padding: "12px 8px" }}>
+                      {variant.inventoryQuantity}
+                    </td>
+                    <td style={{ padding: "12px 8px" }}>${variant.price}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </s-box>
 
-              <s-heading>productVariantsBulkUpdate mutation</s-heading>
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <pre style={{ margin: 0 }}>
-                  <code>{JSON.stringify(fetcher.data.variant, null, 2)}</code>
-                </pre>
-              </s-box>
-            </s-stack>
-          </s-section>
+        {variants.length === 0 && (
+          <s-paragraph>
+            No products found. Make sure you have products in your store.
+          </s-paragraph>
         )}
-      </s-section>
-
-      <s-section slot="aside" heading="App template specs">
-        <s-paragraph>
-          <s-text>Framework: </s-text>
-          <s-link href="https://reactrouter.com/" target="_blank">
-            React Router
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>Interface: </s-text>
-          <s-link
-            href="https://shopify.dev/docs/api/app-home/using-polaris-components"
-            target="_blank"
-          >
-            Polaris web components
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>API: </s-text>
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql"
-            target="_blank"
-          >
-            GraphQL
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>Database: </s-text>
-          <s-link href="https://www.prisma.io/" target="_blank">
-            Prisma
-          </s-link>
-        </s-paragraph>
-      </s-section>
-
-      <s-section slot="aside" heading="Next steps">
-        <s-unordered-list>
-          <s-list-item>
-            Build an{" "}
-            <s-link
-              href="https://shopify.dev/docs/apps/getting-started/build-app-example"
-              target="_blank"
-            >
-              example app
-            </s-link>
-          </s-list-item>
-          <s-list-item>
-            Explore Shopify&apos;s API with{" "}
-            <s-link
-              href="https://shopify.dev/docs/apps/tools/graphiql-admin-api"
-              target="_blank"
-            >
-              GraphiQL
-            </s-link>
-          </s-list-item>
-        </s-unordered-list>
       </s-section>
     </s-page>
   );
 }
-
-export const headers = (headersArgs) => {
-  return boundary.headers(headersArgs);
-};

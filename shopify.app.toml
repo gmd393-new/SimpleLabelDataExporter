@@ -1,7 +1,7 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "6a8bb90c9d6f93426f9a661440175592"
-name = "LabelDataExporter"
+name = "Simple Exporter for Labels"
 application_url = "https://example.com"
 embedded = true
 

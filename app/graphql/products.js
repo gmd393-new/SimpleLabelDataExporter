@@ -1,11 +1,11 @@
 /**
  * GraphQL queries for fetching product and variant data
- * for Niimbot label export
+ * for label export
  */
 
 export const PRODUCTS_QUERY = `#graphql
-  query GetProductsWithVariants($first: Int!, $after: String) {
-    products(first: $first, after: $after) {
+  query GetProductsWithVariants($first: Int!, $after: String, $query: String) {
+    products(first: $first, after: $after, query: $query) {
       edges {
         node {
           id
