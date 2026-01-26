@@ -158,6 +158,30 @@ export default function ExportPage() {
       ...prev,
       [variantId]: numValue
     }));
+
+    // Auto-select the item when quantity is changed
+    if (!selectedIds.includes(variantId)) {
+      setSelectedIds(prev => [...prev, variantId]);
+    }
+  };
+
+  // Increment quantity by 1
+  const handleIncrement = (variantId, variant) => {
+    const currentQty = getEffectiveQuantity(variantId, variant);
+    handleQuantityChange(variantId, currentQty + 1);
+  };
+
+  // Decrement quantity by 1 (minimum 0)
+  const handleDecrement = (variantId, variant) => {
+    const currentQty = getEffectiveQuantity(variantId, variant);
+    if (currentQty > 0) {
+      handleQuantityChange(variantId, currentQty - 1);
+    }
+  };
+
+  // Set specific quantity (for quick-set buttons)
+  const handleSetQuantity = (variantId, quantity) => {
+    handleQuantityChange(variantId, quantity);
   };
 
   // Reset all quantities to stock levels
@@ -298,226 +322,743 @@ export default function ExportPage() {
     fetcher.submit(formData, { method: "post" });
   };
 
+  // Calculate total labels for sticky action bar
+  const totalLabels = selectedIds.reduce((sum, id) => {
+    const variant = variants.find(v => v.id === id);
+    const qty = getEffectiveQuantity(id, variant);
+    return sum + qty;
+  }, 0);
+
   return (
-    <s-page heading="Simple Exporter for Labels">
-      <s-button
-        slot="primary-action"
-        variant="primary"
-        onClick={handleExport}
-        {...(selectedIds.length === 0 ? { disabled: true } : {})}
-      >
-        {(() => {
-          if (selectedIds.length === 0) return "Export Selected";
+    <>
+      <style>{`
+        /* Mobile-first responsive styles */
+        .mobile-cards {
+          display: block;
+        }
+        .desktop-table {
+          display: none;
+        }
 
-          const totalLabels = selectedIds.reduce((sum, id) => {
-            const variant = variants.find(v => v.id === id);
-            const qty = getEffectiveQuantity(id, variant);
-            return sum + qty;
-          }, 0);
+        /* Quantity Stepper Controls */
+        .quantity-controls {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+          align-items: stretch;
+        }
 
-          return `Export ${totalLabels} Label${totalLabels !== 1 ? 's' : ''} (${selectedIds.length} variant${selectedIds.length !== 1 ? 's' : ''})`;
-        })()}
-      </s-button>
+        .stepper {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+        }
 
-      <s-button
-        slot="secondary-actions"
-        variant="secondary"
-        onClick={handleResetQuantities}
-        {...(Object.keys(labelQuantities).length === 0 ? { disabled: true } : {})}
-      >
-        Reset All Quantities
-      </s-button>
+        .stepper button {
+          width: 44px;
+          height: 44px;
+          font-size: 20px;
+          font-weight: 600;
+          color: #202223;
+          background: #ffffff;
+          border: 1px solid #c9cccf;
+          border-radius: 8px;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          transition: all 0.15s ease;
+        }
 
-      <s-section>
-        <s-paragraph>
-          Select product variants below and click "Export" to download an Excel
-          file (.xlsx) formatted for label printing.
-        </s-paragraph>
+        .stepper button:hover {
+          background: #f6f6f7;
+          border-color: #8c9196;
+        }
 
-        {/* Search input */}
-        <div style={{ marginBottom: "16px" }}>
-          <input
-            type="text"
-            placeholder="Search by product name, SKU, barcode, or vendor..."
-            value={searchInput}
-            onChange={handleSearchChange}
-            style={{
-              width: "100%",
-              padding: "10px 12px",
-              fontSize: "14px",
-              border: "1px solid #c9cccf",
-              borderRadius: "4px",
-              boxSizing: "border-box",
-            }}
-          />
-        </div>
+        .stepper button:active {
+          transform: scale(0.95);
+          background: #e1e3e5;
+        }
 
-        <s-box padding="base" borderWidth="base" borderRadius="base">
-          <div style={{ overflowX: "auto" }}>
-            <table
+        .stepper .quantity-display {
+          min-width: 48px;
+          font-size: 20px;
+          font-weight: 700;
+          text-align: center;
+          color: #202223;
+        }
+
+        .quick-set {
+          display: flex;
+          gap: 6px;
+          justify-content: center;
+        }
+
+        .quick-set button {
+          flex: 1;
+          height: 36px;
+          font-size: 16px;
+          font-weight: 600;
+          color: #008060;
+          background: #f1f8f5;
+          border: 1px solid #008060;
+          border-radius: 6px;
+          cursor: pointer;
+          transition: all 0.15s ease;
+        }
+
+        .quick-set button:hover {
+          background: #008060;
+          color: #ffffff;
+        }
+
+        .quick-set button:active {
+          transform: scale(0.95);
+        }
+
+        /* Product Card Styles */
+        .product-card {
+          border: 1px solid #e1e3e5;
+          border-radius: 8px;
+          padding: 16px;
+          margin-bottom: 12px;
+          background: #ffffff;
+          transition: all 0.2s ease;
+        }
+
+        .product-card.selected {
+          border-color: #008060;
+          background: #f1f8f5;
+          box-shadow: 0 0 0 2px rgba(0, 128, 96, 0.1);
+        }
+
+        .card-header {
+          display: flex;
+          gap: 12px;
+          margin-bottom: 12px;
+        }
+
+        .card-checkbox {
+          flex-shrink: 0;
+          margin-top: 4px;
+        }
+
+        .card-checkbox input[type="checkbox"] {
+          width: 24px;
+          height: 24px;
+          cursor: pointer;
+        }
+
+        .card-image {
+          flex-shrink: 0;
+        }
+
+        .card-image img {
+          width: 80px;
+          height: 80px;
+          object-fit: cover;
+          border-radius: 6px;
+        }
+
+        .card-image-placeholder {
+          width: 80px;
+          height: 80px;
+          background: #e1e3e5;
+          border-radius: 6px;
+        }
+
+        .card-info {
+          flex: 1;
+          min-width: 0;
+        }
+
+        .card-title {
+          font-size: 16px;
+          font-weight: 600;
+          color: #202223;
+          margin: 0 0 4px 0;
+          word-wrap: break-word;
+        }
+
+        .card-variant {
+          font-size: 14px;
+          color: #6d7175;
+          margin: 0 0 8px 0;
+        }
+
+        .card-price {
+          font-size: 18px;
+          font-weight: 700;
+          color: #008060;
+        }
+
+        .card-metadata {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 12px;
+          font-size: 12px;
+          color: #6d7175;
+          margin-bottom: 12px;
+          padding: 8px 0;
+          border-top: 1px solid #e1e3e5;
+        }
+
+        .card-metadata-item {
+          display: flex;
+          gap: 4px;
+        }
+
+        .card-metadata-label {
+          font-weight: 600;
+        }
+
+        /* Sticky Bottom Action Bar */
+        .sticky-action-bar {
+          position: sticky;
+          bottom: 0;
+          left: 0;
+          right: 0;
+          background: #ffffff;
+          border-top: 2px solid #e1e3e5;
+          box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.08);
+          padding: 16px;
+          z-index: 100;
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+        }
+
+        .action-bar-status {
+          font-size: 14px;
+          color: #202223;
+          text-align: center;
+          font-weight: 600;
+        }
+
+        .action-bar-buttons {
+          display: flex;
+          gap: 8px;
+        }
+
+        .action-bar-button {
+          flex: 1;
+          height: 48px;
+          font-size: 16px;
+          font-weight: 600;
+          border-radius: 8px;
+          border: none;
+          cursor: pointer;
+          transition: all 0.15s ease;
+        }
+
+        .action-bar-button.primary {
+          background: #008060;
+          color: #ffffff;
+        }
+
+        .action-bar-button.primary:hover {
+          background: #006e52;
+        }
+
+        .action-bar-button.primary:disabled {
+          background: #e1e3e5;
+          color: #8c9196;
+          cursor: not-allowed;
+        }
+
+        .action-bar-button.secondary {
+          background: #ffffff;
+          color: #202223;
+          border: 1px solid #c9cccf;
+        }
+
+        .action-bar-button.secondary:hover {
+          background: #f6f6f7;
+        }
+
+        .action-bar-button.secondary:disabled {
+          background: #f6f6f7;
+          color: #8c9196;
+          cursor: not-allowed;
+        }
+
+        /* Desktop breakpoint */
+        @media (min-width: 768px) {
+          .mobile-cards {
+            display: none;
+          }
+          .desktop-table {
+            display: block;
+          }
+          .sticky-action-bar {
+            display: none;
+          }
+        }
+      `}</style>
+
+      <s-page heading="Simple Exporter for Labels">
+        <s-button
+          slot="primary-action"
+          variant="primary"
+          onClick={handleExport}
+          {...(selectedIds.length === 0 ? { disabled: true } : {})}
+        >
+          {(() => {
+            if (selectedIds.length === 0) return "Export Selected";
+
+            return `Export ${totalLabels} Label${totalLabels !== 1 ? 's' : ''} (${selectedIds.length} variant${selectedIds.length !== 1 ? 's' : ''})`;
+          })()}
+        </s-button>
+
+        <s-button
+          slot="secondary-actions"
+          variant="secondary"
+          onClick={handleResetQuantities}
+          {...(Object.keys(labelQuantities).length === 0 ? { disabled: true } : {})}
+        >
+          Reset All Quantities
+        </s-button>
+
+        <s-section>
+          <s-paragraph>
+            Select product variants below and click "Export" to download an Excel
+            file (.xlsx) formatted for label printing.
+          </s-paragraph>
+
+          {/* Search input */}
+          <div style={{ marginBottom: "16px" }}>
+            <input
+              type="text"
+              placeholder="Search by product name, SKU, barcode, or vendor..."
+              value={searchInput}
+              onChange={handleSearchChange}
               style={{
                 width: "100%",
-                borderCollapse: "collapse",
+                padding: "10px 12px",
                 fontSize: "14px",
+                border: "1px solid #c9cccf",
+                borderRadius: "4px",
+                boxSizing: "border-box",
               }}
-            >
-              <thead>
-                <tr style={{ borderBottom: "1px solid #e1e3e5" }}>
-                  <th style={{ padding: "12px 8px", textAlign: "left" }}>
+            />
+          </div>
+
+          {/* Select All - Mobile */}
+          <div className="mobile-cards" style={{ marginBottom: "12px" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "14px", fontWeight: "600" }}>
+              <input
+                type="checkbox"
+                onChange={handleSelectAll}
+                checked={selectedIds.length === variants.length && variants.length > 0}
+                style={{ width: "20px", height: "20px", cursor: "pointer" }}
+              />
+              Select All ({variants.length})
+            </label>
+          </div>
+
+          {/* Mobile Card Layout */}
+          <div className="mobile-cards">
+            {variants.map((variant) => (
+              <div
+                key={variant.id}
+                className={`product-card ${selectedIds.includes(variant.id) ? 'selected' : ''}`}
+              >
+                <div className="card-header">
+                  <div className="card-checkbox">
                     <input
                       type="checkbox"
-                      onChange={handleSelectAll}
-                      checked={
-                        selectedIds.length === variants.length &&
-                        variants.length > 0
-                      }
+                      checked={selectedIds.includes(variant.id)}
+                      onChange={() => handleSelectOne(variant.id)}
                     />
-                  </th>
-                  <th style={{ padding: "12px 8px", textAlign: "left" }}>
-                    Image
-                  </th>
-                  <th style={{ padding: "12px 8px", textAlign: "left" }}>
-                    Product Name
-                  </th>
-                  <th style={{ padding: "12px 8px", textAlign: "left" }}>
-                    Vendor
-                  </th>
-                  <th style={{ padding: "12px 8px", textAlign: "left" }}>
-                    SKU
-                  </th>
-                  <th style={{ padding: "12px 8px", textAlign: "left" }}>
-                    Barcode
-                  </th>
-                  <th style={{ padding: "12px 8px", textAlign: "left" }}>
-                    Stock
-                  </th>
-                  <th style={{ padding: "12px 8px", textAlign: "left" }}>
-                    Label Qty
-                  </th>
-                  <th style={{ padding: "12px 8px", textAlign: "left" }}>
-                    Price
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {variants.map((variant) => (
-                  <tr
-                    key={variant.id}
-                    style={{
-                      borderBottom: "1px solid #e1e3e5",
-                      backgroundColor: selectedIds.includes(variant.id)
-                        ? "#f6f6f7"
-                        : "transparent",
-                    }}
-                  >
-                    <td style={{ padding: "12px 8px" }}>
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.includes(variant.id)}
-                        onChange={() => handleSelectOne(variant.id)}
-                      />
-                    </td>
-                    <td style={{ padding: "12px 8px" }}>
-                      {variant.image ? (
-                        <img
-                          src={variant.image}
-                          alt={variant.imageAlt}
-                          style={{
-                            width: "40px",
-                            height: "40px",
-                            objectFit: "cover",
-                            borderRadius: "4px",
-                          }}
-                        />
+                  </div>
+
+                  <div className="card-image">
+                    {variant.image ? (
+                      <img src={variant.image} alt={variant.imageAlt} />
+                    ) : (
+                      <div className="card-image-placeholder" />
+                    )}
+                  </div>
+
+                  <div className="card-info">
+                    <h3 className="card-title">{variant.productTitle}</h3>
+                    {variant.variantTitle && variant.variantTitle !== "Default Title" && (
+                      <p className="card-variant">{variant.variantTitle}</p>
+                    )}
+                    <div className="card-price">${variant.price}</div>
+                  </div>
+                </div>
+
+                <div className="card-metadata">
+                  <div className="card-metadata-item">
+                    <span className="card-metadata-label">Stock:</span>
+                    <span>{variant.inventoryQuantity}</span>
+                  </div>
+                  <div className="card-metadata-item">
+                    <span className="card-metadata-label">SKU:</span>
+                    <span>{variant.sku}</span>
+                  </div>
+                  {variant.vendor && (
+                    <div className="card-metadata-item">
+                      <span className="card-metadata-label">Vendor:</span>
+                      <span>{variant.vendor}</span>
+                    </div>
+                  )}
+                  <div className="card-metadata-item">
+                    <span className="card-metadata-label">Barcode:</span>
+                    <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                      {variant.barcode ? (
+                        variant.barcode
                       ) : (
-                        <div
-                          style={{
-                            width: "40px",
-                            height: "40px",
-                            backgroundColor: "#e1e3e5",
-                            borderRadius: "4px",
-                          }}
-                        />
+                        <>
+                          <span style={{ fontSize: "14px", color: "#bf0711" }}>🚫</span>
+                          <span style={{ color: "#6d7175", fontStyle: "italic" }}>None</span>
+                        </>
                       )}
-                    </td>
-                    <td style={{ padding: "12px 8px" }}>
-                      <div>
-                        <strong>{variant.productTitle}</strong>
-                        {variant.variantTitle &&
-                          variant.variantTitle !== "Default Title" && (
+                    </span>
+                  </div>
+                </div>
+
+                <div className="quantity-controls">
+                  <div className="stepper">
+                    <button
+                      onClick={() => handleDecrement(variant.id, variant)}
+                      aria-label="Decrease quantity"
+                    >
+                      −
+                    </button>
+                    <span className="quantity-display">
+                      {getEffectiveQuantity(variant.id, variant)}
+                    </span>
+                    <button
+                      onClick={() => handleIncrement(variant.id, variant)}
+                      aria-label="Increase quantity"
+                    >
+                      +
+                    </button>
+                  </div>
+
+                  <div className="quick-set">
+                    <button onClick={() => handleSetQuantity(variant.id, 1)}>1</button>
+                    <button onClick={() => handleSetQuantity(variant.id, 2)}>2</button>
+                    <button onClick={() => handleSetQuantity(variant.id, 3)}>3</button>
+                  </div>
+
+                  {labelQuantities[variant.id] !== undefined && (
+                    <button
+                      onClick={() => handleResetSingleQuantity(variant.id)}
+                      style={{
+                        padding: "8px",
+                        fontSize: "13px",
+                        color: "#5c6ac4",
+                        background: "none",
+                        border: "1px solid #c9cccf",
+                        borderRadius: "6px",
+                        cursor: "pointer",
+                        marginTop: "4px",
+                      }}
+                      title="Reset to stock quantity"
+                    >
+                      ↺ Reset to stock ({variant.inventoryQuantity})
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+
+            {variants.length === 0 && (
+              <div style={{ textAlign: "center", padding: "32px", color: "#6d7175" }}>
+                <div style={{ fontSize: "48px", marginBottom: "16px" }}>📦</div>
+                <p style={{ fontSize: "16px", fontWeight: "600", marginBottom: "8px" }}>
+                  No products found
+                </p>
+                <p style={{ fontSize: "14px" }}>
+                  {searchInput ? "Try searching for something else" : "Make sure you have products in your store"}
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Desktop Table Layout */}
+          <div className="desktop-table">
+
+            <s-box padding="base" borderWidth="base" borderRadius="base">
+              <div style={{ overflowX: "auto" }}>
+                <table
+                  style={{
+                    width: "100%",
+                    borderCollapse: "collapse",
+                    fontSize: "14px",
+                  }}
+                >
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid #e1e3e5" }}>
+                      <th style={{ padding: "12px 8px", textAlign: "left" }}>
+                        <input
+                          type="checkbox"
+                          onChange={handleSelectAll}
+                          checked={
+                            selectedIds.length === variants.length &&
+                            variants.length > 0
+                          }
+                        />
+                      </th>
+                      <th style={{ padding: "12px 8px", textAlign: "left" }}>
+                        Image
+                      </th>
+                      <th style={{ padding: "12px 8px", textAlign: "left" }}>
+                        Product Name
+                      </th>
+                      <th style={{ padding: "12px 8px", textAlign: "left" }}>
+                        Vendor
+                      </th>
+                      <th style={{ padding: "12px 8px", textAlign: "left" }}>
+                        SKU
+                      </th>
+                      <th style={{ padding: "12px 8px", textAlign: "left" }}>
+                        Barcode
+                      </th>
+                      <th style={{ padding: "12px 8px", textAlign: "left" }}>
+                        Stock
+                      </th>
+                      <th style={{ padding: "12px 8px", textAlign: "left" }}>
+                        Label Qty
+                      </th>
+                      <th style={{ padding: "12px 8px", textAlign: "left" }}>
+                        Price
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {variants.map((variant) => (
+                      <tr
+                        key={variant.id}
+                        style={{
+                          borderBottom: "1px solid #e1e3e5",
+                          backgroundColor: selectedIds.includes(variant.id)
+                            ? "#f6f6f7"
+                            : "transparent",
+                        }}
+                      >
+                        <td style={{ padding: "12px 8px" }}>
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.includes(variant.id)}
+                            onChange={() => handleSelectOne(variant.id)}
+                          />
+                        </td>
+                        <td style={{ padding: "12px 8px" }}>
+                          {variant.image ? (
+                            <img
+                              src={variant.image}
+                              alt={variant.imageAlt}
+                              style={{
+                                width: "40px",
+                                height: "40px",
+                                objectFit: "cover",
+                                borderRadius: "4px",
+                              }}
+                            />
+                          ) : (
                             <div
                               style={{
-                                fontSize: "12px",
-                                color: "#6d7175",
-                                marginTop: "4px",
+                                width: "40px",
+                                height: "40px",
+                                backgroundColor: "#e1e3e5",
+                                borderRadius: "4px",
                               }}
-                            >
-                              {variant.variantTitle}
-                            </div>
+                            />
                           )}
-                      </div>
-                    </td>
-                    <td style={{ padding: "12px 8px" }}>
-                      {variant.vendor || "—"}
-                    </td>
-                    <td style={{ padding: "12px 8px" }}>{variant.sku}</td>
-                    <td style={{ padding: "12px 8px" }}>
-                      {variant.barcode || "—"}
-                    </td>
-                    <td style={{ padding: "12px 8px" }}>
-                      {variant.inventoryQuantity}
-                    </td>
-                    <td style={{ padding: "12px 8px" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                        <input
-                          type="number"
-                          min="0"
-                          max="1000"
-                          value={getEffectiveQuantity(variant.id, variant)}
-                          onChange={(e) => handleQuantityChange(variant.id, e.target.value)}
-                          aria-label={`Label quantity for ${variant.displayName}`}
-                          style={{
-                            width: "60px",
-                            padding: "4px 8px",
-                            fontSize: "14px",
-                            border: "1px solid #c9cccf",
-                            borderRadius: "4px",
-                            textAlign: "center",
-                          }}
-                        />
-                        {labelQuantities[variant.id] !== undefined && (
-                          <button
-                            onClick={() => handleResetSingleQuantity(variant.id)}
-                            style={{
-                              padding: "2px 6px",
-                              fontSize: "11px",
-                              color: "#5c6ac4",
-                              background: "none",
-                              border: "none",
-                              cursor: "pointer",
-                              textDecoration: "underline",
-                            }}
-                            title="Reset to stock quantity"
-                          >
-                            ↺
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                    <td style={{ padding: "12px 8px" }}>${variant.price}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </s-box>
+                        </td>
+                        <td style={{ padding: "12px 8px" }}>
+                          <div>
+                            <strong>{variant.productTitle}</strong>
+                            {variant.variantTitle &&
+                              variant.variantTitle !== "Default Title" && (
+                                <div
+                                  style={{
+                                    fontSize: "12px",
+                                    color: "#6d7175",
+                                    marginTop: "4px",
+                                  }}
+                                >
+                                  {variant.variantTitle}
+                                </div>
+                              )}
+                          </div>
+                        </td>
+                        <td style={{ padding: "12px 8px" }}>
+                          {variant.vendor || "—"}
+                        </td>
+                        <td style={{ padding: "12px 8px" }}>{variant.sku}</td>
+                        <td style={{ padding: "12px 8px" }}>
+                          {variant.barcode || "—"}
+                        </td>
+                        <td style={{ padding: "12px 8px" }}>
+                          {variant.inventoryQuantity}
+                        </td>
+                        <td style={{ padding: "12px 8px" }}>
+                          <div style={{ display: "flex", flexDirection: "column", gap: "6px", minWidth: "120px" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px", justifyContent: "center" }}>
+                              <button
+                                onClick={() => handleDecrement(variant.id, variant)}
+                                style={{
+                                  width: "32px",
+                                  height: "32px",
+                                  fontSize: "18px",
+                                  fontWeight: "600",
+                                  color: "#202223",
+                                  background: "#ffffff",
+                                  border: "1px solid #c9cccf",
+                                  borderRadius: "6px",
+                                  cursor: "pointer",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                }}
+                                aria-label="Decrease quantity"
+                              >
+                                −
+                              </button>
+                              <span style={{ minWidth: "32px", fontSize: "16px", fontWeight: "700", textAlign: "center" }}>
+                                {getEffectiveQuantity(variant.id, variant)}
+                              </span>
+                              <button
+                                onClick={() => handleIncrement(variant.id, variant)}
+                                style={{
+                                  width: "32px",
+                                  height: "32px",
+                                  fontSize: "18px",
+                                  fontWeight: "600",
+                                  color: "#202223",
+                                  background: "#ffffff",
+                                  border: "1px solid #c9cccf",
+                                  borderRadius: "6px",
+                                  cursor: "pointer",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                }}
+                                aria-label="Increase quantity"
+                              >
+                                +
+                              </button>
+                            </div>
+                            <div style={{ display: "flex", gap: "4px", justifyContent: "center" }}>
+                              <button
+                                onClick={() => handleSetQuantity(variant.id, 1)}
+                                style={{
+                                  flex: "1",
+                                  height: "24px",
+                                  fontSize: "12px",
+                                  fontWeight: "600",
+                                  color: "#008060",
+                                  background: "#f1f8f5",
+                                  border: "1px solid #008060",
+                                  borderRadius: "4px",
+                                  cursor: "pointer",
+                                }}
+                              >
+                                1
+                              </button>
+                              <button
+                                onClick={() => handleSetQuantity(variant.id, 2)}
+                                style={{
+                                  flex: "1",
+                                  height: "24px",
+                                  fontSize: "12px",
+                                  fontWeight: "600",
+                                  color: "#008060",
+                                  background: "#f1f8f5",
+                                  border: "1px solid #008060",
+                                  borderRadius: "4px",
+                                  cursor: "pointer",
+                                }}
+                              >
+                                2
+                              </button>
+                              <button
+                                onClick={() => handleSetQuantity(variant.id, 3)}
+                                style={{
+                                  flex: "1",
+                                  height: "24px",
+                                  fontSize: "12px",
+                                  fontWeight: "600",
+                                  color: "#008060",
+                                  background: "#f1f8f5",
+                                  border: "1px solid #008060",
+                                  borderRadius: "4px",
+                                  cursor: "pointer",
+                                }}
+                              >
+                                3
+                              </button>
+                            </div>
+                            {labelQuantities[variant.id] !== undefined && (
+                              <button
+                                onClick={() => handleResetSingleQuantity(variant.id)}
+                                style={{
+                                  padding: "4px",
+                                  fontSize: "11px",
+                                  color: "#5c6ac4",
+                                  background: "none",
+                                  border: "none",
+                                  cursor: "pointer",
+                                  textDecoration: "underline",
+                                }}
+                                title="Reset to stock quantity"
+                              >
+                                ↺ Reset
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                        <td style={{ padding: "12px 8px" }}>${variant.price}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </s-box>
 
-        {variants.length === 0 && (
-          <s-paragraph>
-            No products found. Make sure you have products in your store.
-          </s-paragraph>
-        )}
-      </s-section>
-    </s-page>
+            {variants.length === 0 && (
+              <s-paragraph>
+                No products found. Make sure you have products in your store.
+              </s-paragraph>
+            )}
+          </div>
+        </s-section>
+      </s-page>
+
+      {/* Sticky Bottom Action Bar - Mobile Only */}
+      <div className="sticky-action-bar">
+        <div className="action-bar-status">
+          {selectedIds.length > 0 ? (
+            <>
+              {selectedIds.length} selected • {totalLabels} label{totalLabels !== 1 ? 's' : ''}
+            </>
+          ) : (
+            "Select products to export"
+          )}
+        </div>
+        <div className="action-bar-buttons">
+          <button
+            className="action-bar-button secondary"
+            onClick={handleResetQuantities}
+            disabled={Object.keys(labelQuantities).length === 0}
+          >
+            Reset All
+          </button>
+          <button
+            className="action-bar-button primary"
+            onClick={handleExport}
+            disabled={selectedIds.length === 0}
+          >
+            Export {totalLabels > 0 ? `(${totalLabels})` : ''}
+          </button>
+        </div>
+      </div>
+    </>
   );
 }
