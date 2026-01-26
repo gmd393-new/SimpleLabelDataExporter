@@ -9,7 +9,7 @@ This document provides a high-level overview of the deployment architecture. For
 ```
 ┌─────────────────────────────────────────────────────────┐
 │ DEVELOPMENT (Local)                                     │
-│ - Database: SQLite (prisma/dev.sqlite)                  │
+│ - Database: PostgreSQL (Docker)                         │
 │ - Server: shopify app dev (localhost + tunnel)          │
 │ - Purpose: Active development and testing               │
 │ - Docs: DEVELOPMENT.md                                  │
@@ -140,7 +140,7 @@ flyctl deploy --config fly.production.toml --app simplelabels-prod
 
 ### Development
 ```bash
-DATABASE_URL="file:./prisma/dev.sqlite"
+DATABASE_URL="postgresql://labelexporter:devpassword@localhost:5432/labelexporter_dev"
 NODE_ENV=development
 # SHOPIFY_* vars set by shopify CLI
 ```
@@ -162,8 +162,8 @@ NODE_ENV=production            # Set via flyctl secrets
 ## Database Strategy
 
 **Development**:
-- SQLite for simplicity (no setup required)
-- Database file: `prisma/dev.sqlite`
+- PostgreSQL via Docker for consistency with staging/production
+- Database: `labelexporter_dev` running on port 5432
 - Migrations created via: `npx prisma migrate dev`
 
 **Staging/Production**:
@@ -172,8 +172,9 @@ NODE_ENV=production            # Set via flyctl secrets
 - Migrations applied automatically on deploy via `npm run docker-start`
 
 **Migration Compatibility**:
-- Same migration files work for both SQLite and PostgreSQL
-- Prisma handles database-specific syntax
+- All environments use PostgreSQL
+- Same migration files work across development, staging, and production
+- Catches PostgreSQL-specific issues during local development
 
 ## Multi-Tenant Security
 

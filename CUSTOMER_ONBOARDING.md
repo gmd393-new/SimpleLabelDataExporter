@@ -36,9 +36,10 @@ Each customer gets a **custom Shopify app** installed in their store. All custom
 ### Step 3: Configure API Scopes
 
 1. Click **Configure Admin API scopes** button
-2. In the search box, type: `read_products`
-3. Check the box for: ☑️ `read_products`
-   - **Description**: "Read products, variants, and collections"
+2. In the search box, type: `write_products`
+3. Check the box for: ☑️ `write_products`
+   - **Description**: "Read and write products, variants, and collections"
+   - **Note**: This scope is required for both reading product data AND generating barcodes for variants
 4. Scroll down and click **Save**
 
 ### Step 4: Install the App
@@ -135,12 +136,43 @@ Once the app is installed and tested, inform the customer:
    - Click "Label Data Exporter"
 
 2. **How to use**:
-   - Search for products by name, SKU, or barcode
+   - Search for products by name, SKU, barcode, or vendor
    - Select products using checkboxes
+   - Click "Generate" button for variants without barcodes (optional)
    - Click "Export Selected to Excel"
    - Open the downloaded file in Excel or label printing software
 
 3. **Support contact**: Provide your support email/contact
+
+## Updating Existing Customers
+
+If you have existing customers who were onboarded before the barcode generation feature was added, they'll need to update their app permissions from `read_products` to `write_products`.
+
+### Update Process
+
+1. Contact the customer and explain the new barcode generation feature
+2. Have them log into their Shopify admin
+3. Navigate to: **Settings** → **Apps and sales channels** → **Develop apps**
+4. Click on their **Label Data Exporter** custom app
+5. Click **Configuration** tab
+6. Click **Configure Admin API scopes**
+7. In the search box, type: `write_products`
+8. **Uncheck** `read_products` (if checked)
+9. **Check** ☑️ `write_products`
+10. Click **Save**
+11. They'll be prompted to **reinstall the app** - click **Install app**
+12. Confirm by clicking **Install** in the modal
+
+**Note**: The app will continue to work with `read_products` for export functionality, but barcode generation will only work after upgrading to `write_products`.
+
+### Verification
+
+After updating:
+1. Customer opens the app
+2. Finds a product variant without a barcode
+3. Clicks the "Generate" button
+4. An 8-digit barcode should be generated and appear immediately
+5. The barcode should also be saved in Shopify admin
 
 ## Removing a Customer
 
@@ -179,11 +211,11 @@ DELETE FROM "Session" WHERE shop = 'customer-store-name.myshopify.com';
 
 ### "Permission Denied" Error
 
-**Cause**: Missing `read_products` scope
+**Cause**: Missing `write_products` scope
 
 **Solution**:
 1. Go to custom app → **API credentials** → **Configure Admin API scopes**
-2. Check ☑️ `read_products`
+2. Check ☑️ `write_products`
 3. Click **Save**
 4. **Uninstall and reinstall** the app to apply new permissions
 

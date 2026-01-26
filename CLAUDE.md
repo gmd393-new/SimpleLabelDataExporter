@@ -32,7 +32,7 @@ npm run lint
 - **UI Library**: Shopify Polaris web components (s-page, s-button, etc.)
 - **API**: Shopify Admin GraphQL API
 - **Authentication**: Shopify App Bridge
-- **Database**: Prisma (SQLite in development)
+- **Database**: Prisma (PostgreSQL in development via Docker)
 
 ### Key Files
 
@@ -40,8 +40,10 @@ npm run lint
 - Provides AppProvider wrapper for embedded app authentication
 - No navigation menu (single-page app)
 
-**GraphQL Queries** (`app/graphql/products.js`)
+**GraphQL Queries & Mutations** (`app/graphql/products.js`)
 - `PRODUCTS_QUERY`: Fetches products with variants including barcode, SKU, price, and inventory data
+- `CHECK_BARCODE_EXISTS_QUERY`: Verifies if a barcode already exists in the store
+- `UPDATE_VARIANT_BARCODE_MUTATION`: Updates a variant's barcode using productVariantsBulkUpdate
 - Supports search filtering via `$query` parameter
 - Search syntax: `title:*term* OR sku:*term* OR barcode:*term*`
 
@@ -50,18 +52,25 @@ npm run lint
   - Fetches product/variant data via GraphQL
   - Handles `?search=` query parameter for product filtering
   - Returns up to 50 products per search
+  - Includes productId in variant data for barcode updates
+- **Actions**:
+  - `export`: Creates one-time download token for Excel file export
+  - `generateBarcode`: Generates unique 8-digit barcode and updates variant in Shopify
 - **Component**:
   - Live search input with 500ms debouncing
   - Product table with multi-select checkboxes
+  - Barcode generation buttons for variants without barcodes
   - Uses Polaris web components and custom HTML table
 - **Download Mechanism**:
-  - Client-side XLSX generation using SheetJS library
-  - Blob API to trigger downloads (avoids App Bridge iframe restrictions)
+  - Hybrid approach for desktop and mobile compatibility
+  - Server generates Excel file and returns as base64 (maintains authentication)
+  - Client converts base64 to Blob and triggers download (works in embedded apps)
+  - Compatible with both desktop and mobile Shopify apps
 - **Dependencies**: `xlsx` package for Excel file generation
 
 **Configuration** (`shopify.app.toml`)
 - App configuration including client_id, scopes, and webhooks
-- `access_scopes = "write_products"` - required for reading product data
+- `access_scopes = "write_products"` - required for reading product data and generating barcodes
 
 ### Data Model
 
@@ -70,16 +79,40 @@ Each row in the export table represents a **ProductVariant** (not a Product). Th
 - A single product can have multiple variants (e.g., T-Shirt in sizes S, M, L)
 - The export operates on variants to provide accurate label data
 
+### Barcode Generation
+
+The app can generate unique 8-digit barcodes for variants that don't have one:
+
+**Utility Functions** (`app/utils/barcode.js`)
+- `generateRandomBarcode()`: Creates random 8-digit number (10000000-99999999)
+- `checkBarcodeExists(admin, barcode)`: Verifies barcode doesn't already exist in store
+- `generateUniqueBarcode(admin)`: Loops until unique barcode found (max 10 attempts)
+
+**Generation Process**:
+1. User clicks "Generate" button on variant without barcode
+2. Server generates random 8-digit number
+3. Checks if barcode already exists in store via GraphQL query
+4. If collision detected, tries again (up to 10 attempts)
+5. Updates variant in Shopify using `productVariantsBulkUpdate` mutation
+6. Returns new barcode to client for immediate UI update
+
+**Features**:
+- Collision detection prevents duplicate barcodes
+- Real-time UI updates without page reload
+- Works on both mobile and desktop views
+- Saves directly to Shopify (no manual entry needed)
+- Toast notifications show generated barcode
+
 ### Excel Export Format
 
 The XLSX file is formatted for label printing:
 
-1. **Price**: Raw decimal number without currency symbols (e.g., `10.00` not `$10.00`)
+1. **Price**: Formatted with dollar sign (e.g., `$10.00`)
 2. **Barcode**: Cell type set to "string" to prevent Excel from converting to scientific notation (prevents `123456789` from becoming `1.23E+08`)
-3. **Columns**: Product Name, Variant, SKU, Barcode, Price
+3. **Columns**: Product Name, Size, Barcode, Price
 4. **Column Widths**: Auto-sized for readability
 5. **Filename**: Auto-generated with date stamp: `label-export-YYYY-MM-DD.xlsx`
-6. **Library**: Uses SheetJS (xlsx) for client-side Excel generation
+6. **Library**: Uses SheetJS (xlsx) for server-side generation with client-side download trigger
 
 ### GraphQL Field Reference
 
@@ -92,39 +125,44 @@ Verified against Shopify Admin API (2026-04):
 
 ### File Downloads in Embedded Apps
 
-**Important**: Shopify App Bridge can interfere with file downloads in embedded apps when using fetch/form submissions or server-generated downloads from within the iframe.
+**Important**: File downloads in embedded Shopify apps require special handling to work on both desktop and mobile.
 
-**Solution**: Generate files on the client side using the Blob API:
+**This App's Solution** - Hybrid Server/Client Approach:
+
+1. **Server-side**: Generate Excel file using SheetJS, return as base64 via action
+2. **Client-side**: Convert base64 to Blob and trigger download
 
 ```javascript
-// For CSV files
-const blob = new Blob([csvContent], { type: "text/csv" });
+// In action (server-side)
+const wbout = XLSX.write(wb, { bookType: "xlsx", type: "base64" });
+return { success: true, fileData: wbout, fileName: "export.xlsx" };
 
-// For Excel files (using SheetJS)
-const wbout = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
-const blob = new Blob([wbout], {
+// In component (client-side)
+const byteCharacters = atob(fileData);
+const byteArray = new Uint8Array(byteCharacters.length);
+for (let i = 0; i < byteCharacters.length; i++) {
+  byteArray[i] = byteCharacters.charCodeAt(i);
+}
+const blob = new Blob([byteArray], {
   type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 });
 
-// Trigger download
 const url = window.URL.createObjectURL(blob);
 const a = document.createElement("a");
 a.href = url;
-a.download = "filename.xlsx";
+a.download = fileName;
 document.body.appendChild(a);
 a.click();
 window.URL.revokeObjectURL(url);
 document.body.removeChild(a);
 ```
 
-This approach:
-- Works within the iframe without authentication issues
-- Doesn't require server round-trips for data already loaded
-- Avoids App Bridge redirect complications
-
-Alternative: If server-side generation is required, use `window.open(downloadUrl, "_blank")` with one-time tokens.
-
-Source: [Shopify Community - How do I force a download with App Bridge?](https://community.shopify.com/c/shopify-apis-and-sdks/how-do-i-force-a-download-with-app-bridge/m-p/611434)
+**Why this approach?**
+- ✅ Maintains authentication context (uses React Router action)
+- ✅ Works on desktop embedded apps
+- ✅ Works on mobile Shopify app
+- ✅ Server-side generation is more reliable for large files
+- ✅ Avoids App Bridge iframe download restrictions
 
 ### Adding New Routes
 
@@ -166,7 +204,7 @@ This app uses a **three-tier deployment strategy**:
 
 | Environment | Database | URL | Purpose |
 |------------|----------|-----|---------|
-| Development | SQLite | localhost (via tunnel) | Active development |
+| Development | PostgreSQL (Docker) | localhost (via tunnel) | Active development |
 | Staging | PostgreSQL | simplelabeldataexporter.fly.dev | Pre-production testing |
 | Production | PostgreSQL | simplelabels-prod.fly.dev | Customer deployments |
 

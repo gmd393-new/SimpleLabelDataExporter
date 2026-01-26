@@ -6,7 +6,7 @@ This guide covers deploying the Label Data Exporter to staging and production en
 
 ```
 Development (Local)
-├── Database: SQLite (prisma/dev.sqlite)
+├── Database: PostgreSQL (Docker)
 ├── Server: shopify app dev (local + tunnel)
 └── Purpose: Active development and testing
 
