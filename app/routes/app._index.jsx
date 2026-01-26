@@ -2,9 +2,10 @@ import { useLoaderData, useSubmit, useFetcher } from "react-router";
 import { useState, useEffect, useRef } from "react";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
-import { PRODUCTS_QUERY } from "../graphql/products";
+import { PRODUCTS_QUERY, UPDATE_VARIANT_BARCODE_MUTATION } from "../graphql/products";
 import crypto from "crypto";
 import db from "../db.server";
+import { generateUniqueBarcode } from "../utils/barcode";
 
 /**
  * Loader: Fetches products and variants from Shopify Admin API
@@ -56,6 +57,7 @@ export async function loader({ request }) {
     product.variants.edges.forEach(({ node: variant }) => {
       variantRows.push({
         id: variant.id,
+        productId: product.id,
         productTitle: product.title,
         vendor: product.vendor || "",
         variantTitle: variant.title,
@@ -78,59 +80,117 @@ export async function loader({ request }) {
 }
 
 /**
- * Action: Creates a one-time download token for mobile-compatible file exports
+ * Action: Handles both export and barcode generation actions
  *
- * This approach works on both desktop and mobile Shopify apps by:
- * 1. Creating a secure one-time token
- * 2. Storing export data in the database temporarily
- * 3. Returning a download URL with the token
- * 4. Client uses App Bridge Redirect.REMOTE to open the download in a new context
+ * Actions:
+ * 1. "export" - Creates a one-time download token for mobile-compatible file exports
+ * 2. "generateBarcode" - Generates and updates a unique barcode for a variant
  */
 export async function action({ request }) {
-  const { session } = await authenticate.admin(request);
+  const { session, admin } = await authenticate.admin(request);
 
   const formData = await request.formData();
-  const exportDataJson = formData.get("exportData");
+  const actionType = formData.get("actionType");
 
-  if (!exportDataJson) {
-    return { error: "No export data provided" };
+  // Handle barcode generation
+  if (actionType === "generateBarcode") {
+    const variantId = formData.get("variantId");
+    const productId = formData.get("productId");
+
+    if (!variantId || !productId) {
+      return { error: "No variant ID or product ID provided" };
+    }
+
+    try {
+      // Generate a unique barcode
+      const newBarcode = await generateUniqueBarcode(admin);
+
+      // Update the variant in Shopify using bulk update mutation
+      const response = await admin.graphql(UPDATE_VARIANT_BARCODE_MUTATION, {
+        variables: {
+          productId: productId,
+          variants: [
+            {
+              id: variantId,
+              barcode: newBarcode,
+            },
+          ],
+        },
+      });
+
+      const data = await response.json();
+
+      // Check for errors
+      if (data.data.productVariantsBulkUpdate.userErrors.length > 0) {
+        const errorMessages = data.data.productVariantsBulkUpdate.userErrors
+          .map((e) => e.message)
+          .join(", ");
+        return { error: `Failed to update barcode: ${errorMessages}` };
+      }
+
+      // Return success with new barcode
+      return {
+        success: true,
+        actionType: "generateBarcode",
+        variantId,
+        barcode: newBarcode,
+      };
+    } catch (error) {
+      console.error("Barcode generation error:", error);
+      return { error: error.message || "Failed to generate barcode" };
+    }
   }
 
-  // Generate a secure one-time token (crypto.randomUUID() in Node 19+)
-  const token = crypto.randomUUID();
+  // Handle export action
+  if (actionType === "export" || !actionType) {
+    const exportDataJson = formData.get("exportData");
 
-  const fileName = `label-export-${new Date().toISOString().split("T")[0]}.xlsx`;
+    if (!exportDataJson) {
+      return { error: "No export data provided" };
+    }
 
-  // Store token in database with export data (expires after 15 minutes)
-  await db.downloadToken.create({
-    data: {
-      token,
-      shop: session.shop,
-      data: exportDataJson,
+    // Generate a secure one-time token (crypto.randomUUID() in Node 19+)
+    const token = crypto.randomUUID();
+
+    const fileName = `label-export-${new Date().toISOString().split("T")[0]}.xlsx`;
+
+    // Store token in database with export data (expires after 15 minutes)
+    await db.downloadToken.create({
+      data: {
+        token,
+        shop: session.shop,
+        data: exportDataJson,
+        fileName,
+      },
+    });
+
+    // Return download URL with token
+    return {
+      success: true,
+      actionType: "export",
+      downloadUrl: `/download?token=${token}`,
       fileName,
-    },
-  });
+    };
+  }
 
-  // Return download URL with token
-  return {
-    success: true,
-    downloadUrl: `/download?token=${token}`,
-    fileName,
-  };
+  return { error: "Invalid action type" };
 }
 
 /**
  * Component: Product selection table with export functionality
  */
 export default function ExportPage() {
-  const { variants, searchQuery } = useLoaderData();
+  const { variants: initialVariants, searchQuery } = useLoaderData();
   const shopify = useAppBridge();
   const submit = useSubmit();
   const fetcher = useFetcher();
+  const barcodeFetcher = useFetcher();
   const [selectedIds, setSelectedIds] = useState([]);
   const [searchInput, setSearchInput] = useState(searchQuery || "");
   const debounceTimer = useRef(null);
   const [labelQuantities, setLabelQuantities] = useState({});
+  const [variants, setVariants] = useState(initialVariants);
+  const [generatingBarcodeFor, setGeneratingBarcodeFor] = useState(null);
 
   // Get effective quantity (uses default if not customized)
   const getEffectiveQuantity = (variantId, variant) => {
@@ -231,6 +291,11 @@ export default function ExportPage() {
     }, 500);
   };
 
+  // Update variants when loader data changes (e.g., after search)
+  useEffect(() => {
+    setVariants(initialVariants);
+  }, [initialVariants]);
+
   // Cleanup timer on unmount
   useEffect(() => {
     return () => {
@@ -240,9 +305,29 @@ export default function ExportPage() {
     };
   }, []);
 
+  // Handle barcode generation response
+  useEffect(() => {
+    if (barcodeFetcher.data && barcodeFetcher.data.success && barcodeFetcher.data.actionType === "generateBarcode") {
+      const { variantId, barcode } = barcodeFetcher.data;
+
+      // Update the variant in local state
+      setVariants((prevVariants) =>
+        prevVariants.map((v) =>
+          v.id === variantId ? { ...v, barcode } : v
+        )
+      );
+
+      setGeneratingBarcodeFor(null);
+      shopify.toast.show(`Barcode generated: ${barcode}`);
+    } else if (barcodeFetcher.data && barcodeFetcher.data.error) {
+      setGeneratingBarcodeFor(null);
+      shopify.toast.show(barcodeFetcher.data.error, { isError: true });
+    }
+  }, [barcodeFetcher.data, shopify]);
+
   // Handle export response from server
   useEffect(() => {
-    if (fetcher.data && fetcher.data.success) {
+    if (fetcher.data && fetcher.data.success && fetcher.data.actionType === "export") {
       const { downloadUrl } = fetcher.data;
 
       // Construct full URL for download
@@ -267,6 +352,16 @@ export default function ExportPage() {
       shopify.toast.show(fetcher.data.error, { isError: true });
     }
   }, [fetcher.data, shopify, variants, selectedIds]);
+
+  const handleGenerateBarcode = (variantId, productId) => {
+    setGeneratingBarcodeFor(variantId);
+
+    const formData = new FormData();
+    formData.append("actionType", "generateBarcode");
+    formData.append("variantId", variantId);
+    formData.append("productId", productId);
+    barcodeFetcher.submit(formData, { method: "post" });
+  };
 
   const handleExport = () => {
     if (selectedIds.length === 0) {
@@ -318,6 +413,7 @@ export default function ExportPage() {
     // Submit to server action - maintains authentication context
     // Works on both desktop and mobile Shopify apps
     const formData = new FormData();
+    formData.append("actionType", "export");
     formData.append("exportData", JSON.stringify(exportData));
     fetcher.submit(formData, { method: "post" });
   };
@@ -705,18 +801,39 @@ export default function ExportPage() {
                       <span>{variant.vendor}</span>
                     </div>
                   )}
-                  <div className="card-metadata-item">
-                    <span className="card-metadata-label">Barcode:</span>
-                    <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                      {variant.barcode ? (
-                        variant.barcode
-                      ) : (
-                        <>
-                          <span style={{ fontSize: "14px", color: "#bf0711" }}>🚫</span>
-                          <span style={{ color: "#6d7175", fontStyle: "italic" }}>None</span>
-                        </>
-                      )}
-                    </span>
+                  <div className="card-metadata-item" style={{ flex: "1 1 100%", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                      <span className="card-metadata-label">Barcode:</span>
+                      <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                        {variant.barcode ? (
+                          variant.barcode
+                        ) : (
+                          <>
+                            <span style={{ fontSize: "14px", color: "#bf0711" }}>🚫</span>
+                            <span style={{ color: "#6d7175", fontStyle: "italic" }}>None</span>
+                          </>
+                        )}
+                      </span>
+                    </div>
+                    {!variant.barcode && (
+                      <button
+                        onClick={() => handleGenerateBarcode(variant.id, variant.productId)}
+                        disabled={generatingBarcodeFor === variant.id}
+                        style={{
+                          padding: "6px 12px",
+                          fontSize: "13px",
+                          fontWeight: "600",
+                          color: generatingBarcodeFor === variant.id ? "#6d7175" : "#008060",
+                          background: generatingBarcodeFor === variant.id ? "#f6f6f7" : "#f1f8f5",
+                          border: `1px solid ${generatingBarcodeFor === variant.id ? "#c9cccf" : "#008060"}`,
+                          borderRadius: "6px",
+                          cursor: generatingBarcodeFor === variant.id ? "not-allowed" : "pointer",
+                          transition: "all 0.15s ease",
+                        }}
+                      >
+                        {generatingBarcodeFor === variant.id ? "Generating..." : "Generate"}
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -893,7 +1010,27 @@ export default function ExportPage() {
                         </td>
                         <td style={{ padding: "12px 8px" }}>{variant.sku}</td>
                         <td style={{ padding: "12px 8px" }}>
-                          {variant.barcode || "—"}
+                          {variant.barcode ? (
+                            variant.barcode
+                          ) : (
+                            <button
+                              onClick={() => handleGenerateBarcode(variant.id, variant.productId)}
+                              disabled={generatingBarcodeFor === variant.id}
+                              style={{
+                                padding: "6px 12px",
+                                fontSize: "13px",
+                                fontWeight: "600",
+                                color: generatingBarcodeFor === variant.id ? "#6d7175" : "#008060",
+                                background: generatingBarcodeFor === variant.id ? "#f6f6f7" : "#f1f8f5",
+                                border: `1px solid ${generatingBarcodeFor === variant.id ? "#c9cccf" : "#008060"}`,
+                                borderRadius: "6px",
+                                cursor: generatingBarcodeFor === variant.id ? "not-allowed" : "pointer",
+                                transition: "all 0.15s ease",
+                              }}
+                            >
+                              {generatingBarcodeFor === variant.id ? "Generating..." : "Generate"}
+                            </button>
+                          )}
                         </td>
                         <td style={{ padding: "12px 8px" }}>
                           {variant.inventoryQuantity}
