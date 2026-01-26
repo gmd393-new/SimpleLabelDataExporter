@@ -32,3 +32,15 @@ model Session {
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
+
+model DownloadToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  shop      String
+  data      String   // JSON string of export data
+  fileName  String
+  createdAt DateTime @default(now())
+
+  @@index([token])
+  @@index([shop])
+}

@@ -1,9 +1,10 @@
-import { useLoaderData, useSubmit, Form } from "react-router";
+import { useLoaderData, useSubmit, useFetcher } from "react-router";
 import { useState, useEffect, useRef } from "react";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
 import { PRODUCTS_QUERY } from "../graphql/products";
-import * as XLSX from "xlsx";
+import crypto from "crypto";
+import db from "../db.server";
 
 /**
  * Loader: Fetches products and variants from Shopify Admin API
@@ -77,78 +78,45 @@ export async function loader({ request }) {
 }
 
 /**
- * Action: Handles server-side Excel export
+ * Action: Creates a one-time download token for mobile-compatible file exports
+ *
+ * This approach works on both desktop and mobile Shopify apps by:
+ * 1. Creating a secure one-time token
+ * 2. Storing export data in the database temporarily
+ * 3. Returning a download URL with the token
+ * 4. Client uses App Bridge Redirect.REMOTE to open the download in a new context
  */
 export async function action({ request }) {
+  const { session } = await authenticate.admin(request);
+
   const formData = await request.formData();
   const exportDataJson = formData.get("exportData");
 
   if (!exportDataJson) {
-    return new Response("No export data provided", { status: 400 });
+    return { error: "No export data provided" };
   }
 
-  const exportData = JSON.parse(exportDataJson);
+  // Generate a secure one-time token (crypto.randomUUID() in Node 19+)
+  const token = crypto.randomUUID();
 
-  // Build worksheet data - formatted for label printing
-  const wsData = [];
-
-  // Header row
-  wsData.push([
-    "Product Name",
-    "Size",
-    "Barcode",
-    "Price",
-  ]);
-
-  // Data rows - duplicate each variant based on its label quantity
-  exportData.forEach((item) => {
-    wsData.push([
-      item.productTitle,
-      item.variantTitle || "Default",
-      item.barcode || "",
-      `$${item.price || "0.00"}`,
-    ]);
-  });
-
-  // Create worksheet
-  const ws = XLSX.utils.aoa_to_sheet(wsData);
-
-  // Format barcode column as text to prevent scientific notation
-  // Column C (index 2) is the Barcode column
-  const range = XLSX.utils.decode_range(ws["!ref"]);
-  for (let row = 1; row <= range.e.r; row++) {
-    const cellAddress = XLSX.utils.encode_cell({ r: row, c: 2 }); // Column C (Barcode)
-    if (ws[cellAddress]) {
-      ws[cellAddress].t = "s"; // Set cell type to string
-    }
-  }
-
-  // Set column widths for better readability
-  ws["!cols"] = [
-    { wch: 30 }, // Product Name
-    { wch: 20 }, // Size
-    { wch: 20 }, // Barcode
-    { wch: 10 }, // Price
-  ];
-
-  // Create workbook
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Labels");
-
-  // Generate XLSX file as buffer
-  const wbout = XLSX.write(wb, { bookType: "xlsx", type: "buffer" });
-
-  // Return file as download
   const fileName = `label-export-${new Date().toISOString().split("T")[0]}.xlsx`;
 
-  return new Response(wbout, {
-    status: 200,
-    headers: {
-      "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "Content-Disposition": `attachment; filename="${fileName}"`,
-      "Content-Length": wbout.length.toString(),
+  // Store token in database with export data (expires after 15 minutes)
+  await db.downloadToken.create({
+    data: {
+      token,
+      shop: session.shop,
+      data: exportDataJson,
+      fileName,
     },
   });
+
+  // Return download URL with token
+  return {
+    success: true,
+    downloadUrl: `/download?token=${token}`,
+    fileName,
+  };
 }
 
 /**
@@ -158,6 +126,7 @@ export default function ExportPage() {
   const { variants, searchQuery } = useLoaderData();
   const shopify = useAppBridge();
   const submit = useSubmit();
+  const fetcher = useFetcher();
   const [selectedIds, setSelectedIds] = useState([]);
   const [searchInput, setSearchInput] = useState(searchQuery || "");
   const debounceTimer = useRef(null);
@@ -247,6 +216,34 @@ export default function ExportPage() {
     };
   }, []);
 
+  // Handle export response from server
+  useEffect(() => {
+    if (fetcher.data && fetcher.data.success) {
+      const { downloadUrl } = fetcher.data;
+
+      // Construct full URL for download
+      // Using window.location.origin ensures it works in all environments
+      const fullDownloadUrl = `${window.location.origin}${downloadUrl}`;
+
+      // Open download URL in new window/tab
+      // This works on both desktop and mobile Shopify apps
+      // On desktop: opens in new tab with download
+      // On mobile: triggers direct download
+      window.open(fullDownloadUrl, '_blank');
+
+      // Calculate total labels for success message
+      const selectedVariants = variants.filter((v) => selectedIds.includes(v.id));
+      const totalLabels = selectedVariants.reduce((sum, variant) => {
+        const qty = getEffectiveQuantity(variant.id, variant);
+        return sum + qty;
+      }, 0);
+
+      shopify.toast.show(`Export started! Download will begin in a new tab. (${totalLabels} label${totalLabels !== 1 ? 's' : ''})`);
+    } else if (fetcher.data && fetcher.data.error) {
+      shopify.toast.show(fetcher.data.error, { isError: true });
+    }
+  }, [fetcher.data, shopify, variants, selectedIds]);
+
   const handleExport = () => {
     if (selectedIds.length === 0) {
       shopify.toast.show("Please select at least one variant to export", {
@@ -292,23 +289,13 @@ export default function ExportPage() {
       }
     });
 
-    // Create a hidden form to submit the export data
-    const form = document.createElement("form");
-    form.method = "POST";
-    form.action = window.location.pathname;
-    form.target = "_blank"; // Open in new window to trigger download
-
-    const input = document.createElement("input");
-    input.type = "hidden";
-    input.name = "exportData";
-    input.value = JSON.stringify(exportData);
-
-    form.appendChild(input);
-    document.body.appendChild(form);
-    form.submit();
-    document.body.removeChild(form);
-
     shopify.toast.show(`Exporting ${totalLabels} label${totalLabels !== 1 ? 's' : ''}...`);
+
+    // Submit to server action - maintains authentication context
+    // Works on both desktop and mobile Shopify apps
+    const formData = new FormData();
+    formData.append("exportData", JSON.stringify(exportData));
+    fetcher.submit(formData, { method: "post" });
   };
 
   return (
