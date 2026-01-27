@@ -30,12 +30,30 @@ export async function loader({ request }) {
     throw new Response("Invalid or expired download token", { status: 403 });
   }
 
-  // Verify token hasn't expired (15 minutes)
+  // Verify token hasn't expired (15 minutes from creation)
   const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
   if (downloadToken.createdAt < fifteenMinutesAgo) {
     // Clean up expired token
     await db.downloadToken.delete({ where: { token } });
     throw new Response("Download token expired", { status: 403 });
+  }
+
+  // Check if token has been used before
+  if (downloadToken.usedAt) {
+    // Allow reuse within 60 seconds of first use (for mobile apps that might request twice)
+    const sixtySecondsAgo = new Date(Date.now() - 60 * 1000);
+    if (downloadToken.usedAt < sixtySecondsAgo) {
+      // Token was used more than 60 seconds ago - reject
+      await db.downloadToken.delete({ where: { token } });
+      throw new Response("Download token already used", { status: 403 });
+    }
+    // Token is being reused within 60 seconds - allow it
+  } else {
+    // First use - mark the token as used
+    await db.downloadToken.update({
+      where: { token },
+      data: { usedAt: new Date() },
+    });
   }
 
   // Token is valid - the token itself is the authentication
@@ -88,8 +106,8 @@ export async function loader({ request }) {
   // Generate XLSX file as buffer
   const wbout = XLSX.write(wb, { bookType: "xlsx", type: "buffer" });
 
-  // Delete the one-time token (it's been consumed)
-  await db.downloadToken.delete({ where: { token } });
+  // Note: Token cleanup happens via expiry check (15 minutes from creation)
+  // We allow reuse within 60 seconds to support mobile apps that may request twice
 
   // Return file with proper headers for download
   // This works on both desktop and mobile browsers

@@ -40,6 +40,7 @@ model DownloadToken {
   data      String   // JSON string of export data
   fileName  String
   createdAt DateTime @default(now())
+  usedAt    DateTime? // Track when token was first used
 
   @@index([token])
   @@index([shop])

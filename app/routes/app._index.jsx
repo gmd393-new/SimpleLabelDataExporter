@@ -191,6 +191,8 @@ export default function ExportPage() {
   const [labelQuantities, setLabelQuantities] = useState({});
   const [variants, setVariants] = useState(initialVariants);
   const [generatingBarcodeFor, setGeneratingBarcodeFor] = useState(null);
+  const [isDesktop, setIsDesktop] = useState(false);
+  const downloadInitiatedRef = useRef(null);
 
   // Get effective quantity (uses default if not customized)
   const getEffectiveQuantity = (variantId, variant) => {
@@ -305,6 +307,20 @@ export default function ExportPage() {
     };
   }, []);
 
+  // Detect desktop vs mobile for conditional rendering
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(min-width: 768px)');
+
+    // Set initial value
+    setIsDesktop(mediaQuery.matches);
+
+    // Listen for changes
+    const handler = (e) => setIsDesktop(e.matches);
+    mediaQuery.addEventListener('change', handler);
+
+    return () => mediaQuery.removeEventListener('change', handler);
+  }, []);
+
   // Handle barcode generation response
   useEffect(() => {
     if (barcodeFetcher.data && barcodeFetcher.data.success && barcodeFetcher.data.actionType === "generateBarcode") {
@@ -330,15 +346,28 @@ export default function ExportPage() {
     if (fetcher.data && fetcher.data.success && fetcher.data.actionType === "export") {
       const { downloadUrl } = fetcher.data;
 
+      // Prevent duplicate downloads - check if we've already initiated this download
+      if (downloadInitiatedRef.current === downloadUrl) {
+        return;
+      }
+      downloadInitiatedRef.current = downloadUrl;
+
       // Construct full URL for download
-      // Using window.location.origin ensures it works in all environments
       const fullDownloadUrl = `${window.location.origin}${downloadUrl}`;
 
-      // Open download URL in new window/tab
-      // This works on both desktop and mobile Shopify apps
-      // On desktop: opens in new tab with download
-      // On mobile: triggers direct download
-      window.open(fullDownloadUrl, '_blank');
+      // Use hidden iframe approach for smoother mobile experience
+      // This triggers the download without opening/closing a new tab
+      const iframe = document.createElement('iframe');
+      iframe.style.display = 'none';
+      iframe.src = fullDownloadUrl;
+      document.body.appendChild(iframe);
+
+      // Clean up iframe after download starts
+      setTimeout(() => {
+        if (iframe.parentNode) {
+          document.body.removeChild(iframe);
+        }
+      }, 5000);
 
       // Calculate total labels for success message
       const selectedVariants = variants.filter((v) => selectedIds.includes(v.id));
@@ -347,7 +376,7 @@ export default function ExportPage() {
         return sum + qty;
       }, 0);
 
-      shopify.toast.show(`Export started! Download will begin in a new tab. (${totalLabels} label${totalLabels !== 1 ? 's' : ''})`);
+      shopify.toast.show(`Exporting ${totalLabels} label${totalLabels !== 1 ? 's' : ''}... Download starting!`);
     } else if (fetcher.data && fetcher.data.error) {
       shopify.toast.show(fetcher.data.error, { isError: true });
     }
@@ -435,6 +464,7 @@ export default function ExportPage() {
         .desktop-table {
           display: none;
         }
+
 
         /* Quantity Stepper Controls */
         .quantity-controls {
@@ -687,34 +717,35 @@ export default function ExportPage() {
           .desktop-table {
             display: block;
           }
-          .sticky-action-bar {
-            display: none;
-          }
         }
       `}</style>
 
       <s-page heading="Simple Exporter for Labels">
-        <s-button
-          slot="primary-action"
-          variant="primary"
-          onClick={handleExport}
-          {...(selectedIds.length === 0 ? { disabled: true } : {})}
-        >
-          {(() => {
-            if (selectedIds.length === 0) return "Export Selected";
+        {isDesktop && (
+          <>
+            <s-button
+              slot="primary-action"
+              variant="primary"
+              onClick={handleExport}
+              {...(selectedIds.length === 0 ? { disabled: true } : {})}
+            >
+              {(() => {
+                if (selectedIds.length === 0) return "Export Selected";
 
-            return `Export ${totalLabels} Label${totalLabels !== 1 ? 's' : ''} (${selectedIds.length} variant${selectedIds.length !== 1 ? 's' : ''})`;
-          })()}
-        </s-button>
+                return `Export ${totalLabels} Label${totalLabels !== 1 ? 's' : ''} (${selectedIds.length} variant${selectedIds.length !== 1 ? 's' : ''})`;
+              })()}
+            </s-button>
 
-        <s-button
-          slot="secondary-actions"
-          variant="secondary"
-          onClick={handleResetQuantities}
-          {...(Object.keys(labelQuantities).length === 0 ? { disabled: true } : {})}
-        >
-          Reset All Quantities
-        </s-button>
+            <s-button
+              slot="secondary-actions"
+              variant="secondary"
+              onClick={handleResetQuantities}
+              {...(Object.keys(labelQuantities).length === 0 ? { disabled: true } : {})}
+            >
+              Reset All Quantities
+            </s-button>
+          </>
+        )}
 
         <s-section>
           <s-paragraph>
@@ -1169,33 +1200,35 @@ export default function ExportPage() {
       </s-page>
 
       {/* Sticky Bottom Action Bar - Mobile Only */}
-      <div className="sticky-action-bar">
-        <div className="action-bar-status">
-          {selectedIds.length > 0 ? (
-            <>
-              {selectedIds.length} selected • {totalLabels} label{totalLabels !== 1 ? 's' : ''}
-            </>
-          ) : (
-            "Select products to export"
-          )}
+      {!isDesktop && (
+        <div className="sticky-action-bar">
+          <div className="action-bar-status">
+            {selectedIds.length > 0 ? (
+              <>
+                {selectedIds.length} selected • {totalLabels} label{totalLabels !== 1 ? 's' : ''}
+              </>
+            ) : (
+              "Select products to export"
+            )}
+          </div>
+          <div className="action-bar-buttons">
+            <button
+              className="action-bar-button secondary"
+              onClick={handleResetQuantities}
+              disabled={Object.keys(labelQuantities).length === 0}
+            >
+              Reset All
+            </button>
+            <button
+              className="action-bar-button primary"
+              onClick={handleExport}
+              disabled={selectedIds.length === 0}
+            >
+              Export {totalLabels > 0 ? `(${totalLabels})` : ''}
+            </button>
+          </div>
         </div>
-        <div className="action-bar-buttons">
-          <button
-            className="action-bar-button secondary"
-            onClick={handleResetQuantities}
-            disabled={Object.keys(labelQuantities).length === 0}
-          >
-            Reset All
-          </button>
-          <button
-            className="action-bar-button primary"
-            onClick={handleExport}
-            disabled={selectedIds.length === 0}
-          >
-            Export {totalLabels > 0 ? `(${totalLabels})` : ''}
-          </button>
-        </div>
-      </div>
+      )}
     </>
   );
 }
