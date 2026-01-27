@@ -236,3 +236,13 @@ Shopify:
 Internationalization:
 
 - [Internationalizing your app](https://shopify.dev/docs/apps/best-practices/internationalization/getting-started)
+
+## Documentation
+
+All project documentation is in the [`docs/`](./docs/) directory:
+
+- **[Development Setup](./docs/development.md)** - Getting started with local development
+- **[Deployment Guide](./docs/deployment.md)** - Deploying to staging and production
+- **[Security](./docs/security.md)** - Security guidelines and best practices
+
+See [docs/README.md](./docs/README.md) for the complete documentation index.
