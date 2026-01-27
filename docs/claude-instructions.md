@@ -237,7 +237,7 @@ shopify app dev                                           # Start local dev serv
 flyctl deploy                                             # Deploy to staging
 
 # Production Deployment
-flyctl deploy --config fly.production.toml --app <production-app>
+flyctl deploy --config .fly/production.toml --app <production-app>
 
 # Database Access
 flyctl postgres connect --app <production-app>-db       # Connect to production DB

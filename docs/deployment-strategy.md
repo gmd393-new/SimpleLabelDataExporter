@@ -32,7 +32,7 @@ This document provides a high-level overview of the deployment architecture. For
 │ - Database: <production-app>-db (PostgreSQL)           │
 │ - Purpose: Serves all customer stores (multi-tenant)    │
 │ - Shopify Apps: Custom app per customer                │
-│ - Deploy: flyctl deploy --config fly.production.toml    │
+│ - Deploy: flyctl deploy --config .fly/production.toml    │
 │ - Docs: DEPLOYMENT.md, CUSTOMER_ONBOARDING.md          │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -63,11 +63,11 @@ This document provides a high-level overview of the deployment architecture. For
 2. Create database: `flyctl postgres create --name <production-app>-db ...`
 3. Attach database: `flyctl postgres attach <production-app>-db --app <production-app>`
 4. Set secrets: `flyctl secrets set NODE_ENV=production --app <production-app>`
-5. Deploy: `flyctl deploy --config fly.production.toml --app <production-app>`
+5. Deploy: `flyctl deploy --config .fly/production.toml --app <production-app>`
 
 **Subsequent Deployments**:
 ```bash
-flyctl deploy --config fly.production.toml --app <production-app>
+flyctl deploy --config .fly/production.toml --app <production-app>
 ```
 
 📖 See [DEPLOYMENT.md](./DEPLOYMENT.md) for detailed instructions

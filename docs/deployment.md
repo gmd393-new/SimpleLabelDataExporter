@@ -53,10 +53,10 @@ Staging uses your configured staging app (see `.claude/deployment-config.local.j
 # From the label-data-exporter directory
 
 # Deploy to staging (uses fly.toml by default)
-flyctl deploy
+flyctl deploy --config .fly/staging.toml
 
 # Or explicitly specify the config file and app name
-flyctl deploy --config fly.toml --app <staging-app>
+flyctl deploy --config .fly/staging.toml --app <staging-app>
 ```
 
 ### Check Deployment Status
@@ -120,7 +120,7 @@ flyctl secrets set \
 
 ```bash
 # Deploy using production configuration
-flyctl deploy --config fly.production.toml --app <production-app>
+flyctl deploy --config .fly/production.toml --app <production-app>
 ```
 
 ### Step 5: Verify Production Deployment
@@ -142,13 +142,13 @@ After the initial setup, deploying updates is simple:
 
 ```bash
 # Deploy latest code to production
-flyctl deploy --config fly.production.toml --app <production-app>
+flyctl deploy --config .fly/production.toml --app <production-app>
 ```
 
 **Recommended Workflow**:
 1. Test changes locally with `shopify app dev`
 2. Deploy to staging and test: `flyctl deploy --app <staging-app>`
-3. Once verified, deploy to production: `flyctl deploy --config fly.production.toml --app <production-app>`
+3. Once verified, deploy to production: `flyctl deploy --config .fly/production.toml --app <production-app>`
 
 ## Database Management
 
@@ -331,7 +331,7 @@ SELECT shop, id, "isOnline" FROM "Session";
 flyctl logs --app <production-app>
 
 # Try deploying with verbose output
-flyctl deploy --config fly.production.toml --verbose
+flyctl deploy --config .fly/production.toml --verbose
 ```
 
 ### Database Connection Issues

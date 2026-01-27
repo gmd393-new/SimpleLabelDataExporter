@@ -6,7 +6,7 @@ This guide covers local development setup for the Label Data Exporter Shopify ap
 
 ```bash
 # 1. Start PostgreSQL database
-docker compose up -d
+docker compose -f .docker/docker-compose.yml up -d
 
 # 2. Run migrations
 npx prisma migrate deploy
@@ -37,7 +37,7 @@ For local development, this app uses **PostgreSQL** running in Docker to match t
 
 2. **Start the PostgreSQL database**:
    ```bash
-   docker compose up -d
+   docker compose -f .docker/docker-compose.yml up -d
    ```
 
    This starts a PostgreSQL container on port 5432. The database will persist data in a Docker volume.
@@ -63,7 +63,7 @@ The Shopify CLI will:
 
 **Development (Local)**:
 - Uses PostgreSQL via Docker: `postgresql://labelexporter:devpassword@localhost:5432/labelexporter_dev`
-- Start database: `docker compose up -d`
+- Start database: `docker compose -f .docker/docker-compose.yml up -d`
 - Stop database: `docker compose down`
 - Reset database: `docker compose down -v` (deletes all data)
 
@@ -148,7 +148,7 @@ docker compose restart
 ```bash
 # Reset your local database (WARNING: deletes all data)
 docker compose down -v
-docker compose up -d
+docker compose -f .docker/docker-compose.yml up -d
 npx prisma migrate deploy
 npx prisma generate
 ```
