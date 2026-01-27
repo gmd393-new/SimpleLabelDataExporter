@@ -1,5 +1,6 @@
 # Production Fly.io Configuration
 # Deploy with: flyctl deploy --config fly.production.toml
+# Note: App name stored here - keep this file secure or use environment-based config
 
 app = 'simplelabels-prod'
 primary_region = 'iad'

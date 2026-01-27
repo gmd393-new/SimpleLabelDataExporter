@@ -1,5 +1,6 @@
 # Staging Fly.io Configuration
 # Deploy with: flyctl deploy --config fly.toml (or just: flyctl deploy)
+# Note: App name stored here - keep this file secure or use environment-based config
 
 app = 'simplelabeldataexporter'
 primary_region = 'iad'

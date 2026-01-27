@@ -4,6 +4,8 @@
 
 This document provides a high-level overview of the deployment architecture. For detailed instructions, see the linked documentation below.
 
+**Note**: Actual deployment URLs are stored in `.claude/deployment-config.local.json` (gitignored). Copy `.claude/deployment-config.example.json` to get started.
+
 ## Architecture
 
 ```
@@ -17,8 +19,8 @@ This document provides a high-level overview of the deployment architecture. For
                         ↓ Deploy & Test
 ┌─────────────────────────────────────────────────────────┐
 │ STAGING (fly.io)                                        │
-│ - App: simplelabeldataexporter.fly.dev                  │
-│ - Database: simplelabeldataexporter-db (PostgreSQL)     │
+│ - App: <staging-app>.fly.dev                  │
+│ - Database: <staging-app>-db (PostgreSQL)     │
 │ - Purpose: Pre-production testing, QA, demos            │
 │ - Shopify App: Test app in Partners Dashboard          │
 │ - Deploy: flyctl deploy                                 │
@@ -26,8 +28,8 @@ This document provides a high-level overview of the deployment architecture. For
                         ↓ After Testing
 ┌─────────────────────────────────────────────────────────┐
 │ PRODUCTION (fly.io)                                     │
-│ - App: simplelabels-prod.fly.dev                        │
-│ - Database: simplelabels-prod-db (PostgreSQL)           │
+│ - App: <production-app>.fly.dev                        │
+│ - Database: <production-app>-db (PostgreSQL)           │
 │ - Purpose: Serves all customer stores (multi-tenant)    │
 │ - Shopify Apps: Custom app per customer                │
 │ - Deploy: flyctl deploy --config fly.production.toml    │
@@ -49,7 +51,7 @@ This document provides a high-level overview of the deployment architecture. For
 ### Staging Deployment
 
 1. **Deploy**: `flyctl deploy` (uses fly.toml)
-2. **Test**: Verify at https://simplelabeldataexporter.fly.dev
+2. **Test**: Verify at https://<staging-app>.fly.dev
 3. **Verify**: Test in your staging/test store
 
 📖 See [DEPLOYMENT.md](./DEPLOYMENT.md) for details
@@ -57,15 +59,15 @@ This document provides a high-level overview of the deployment architecture. For
 ### Production Deployment
 
 **First Time Setup**:
-1. Create fly.io app: `flyctl apps create simplelabels-prod`
-2. Create database: `flyctl postgres create --name simplelabels-prod-db ...`
-3. Attach database: `flyctl postgres attach simplelabels-prod-db --app simplelabels-prod`
-4. Set secrets: `flyctl secrets set NODE_ENV=production --app simplelabels-prod`
-5. Deploy: `flyctl deploy --config fly.production.toml --app simplelabels-prod`
+1. Create fly.io app: `flyctl apps create <production-app>`
+2. Create database: `flyctl postgres create --name <production-app>-db ...`
+3. Attach database: `flyctl postgres attach <production-app>-db --app <production-app>`
+4. Set secrets: `flyctl secrets set NODE_ENV=production --app <production-app>`
+5. Deploy: `flyctl deploy --config fly.production.toml --app <production-app>`
 
 **Subsequent Deployments**:
 ```bash
-flyctl deploy --config fly.production.toml --app simplelabels-prod
+flyctl deploy --config fly.production.toml --app <production-app>
 ```
 
 📖 See [DEPLOYMENT.md](./DEPLOYMENT.md) for detailed instructions
@@ -140,7 +142,8 @@ flyctl deploy --config fly.production.toml --app simplelabels-prod
 
 ### Development
 ```bash
-DATABASE_URL="postgresql://labelexporter:devpassword@localhost:5432/labelexporter_dev"
+# Database credentials stored in .env.docker (gitignored)
+DATABASE_URL="postgresql://<user>:<password>@localhost:5432/<db>"
 NODE_ENV=development
 # SHOPIFY_* vars set by shopify CLI
 ```
@@ -198,28 +201,28 @@ SELECT shop, id, "isOnline" FROM "Session";
 ### Check App Status
 ```bash
 # Staging
-flyctl status --app simplelabeldataexporter
+flyctl status --app <staging-app>
 
 # Production
-flyctl status --app simplelabels-prod
+flyctl status --app <production-app>
 ```
 
 ### View Logs
 ```bash
 # Real-time logs
-flyctl logs --app simplelabels-prod
+flyctl logs --app <production-app>
 
 # Last hour
-flyctl logs --app simplelabels-prod --time 1h
+flyctl logs --app <production-app> --time 1h
 ```
 
 ### Database Health
 ```bash
 # Check database status
-flyctl postgres status --app simplelabels-prod-db
+flyctl postgres status --app <production-app>-db
 
 # Connect to database
-flyctl postgres connect --app simplelabels-prod-db
+flyctl postgres connect --app <production-app>-db
 ```
 
 ## Cost Breakdown
@@ -240,14 +243,14 @@ If production deployment causes issues:
 
 ```bash
 # 1. List releases
-flyctl releases --app simplelabels-prod
+flyctl releases --app <production-app>
 
 # 2. Rollback to previous version
-flyctl releases rollback <version-number> --app simplelabels-prod
+flyctl releases rollback <version-number> --app <production-app>
 
 # 3. Verify rollback
-flyctl status --app simplelabels-prod
-flyctl logs --app simplelabels-prod
+flyctl status --app <production-app>
+flyctl logs --app <production-app>
 ```
 
 ## Next Steps

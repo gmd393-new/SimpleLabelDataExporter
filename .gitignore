@@ -15,6 +15,12 @@ database.sqlite
 
 .env
 .env.*
+!.env.docker.example
+.env.docker
+*.local
+
+# Sensitive deployment configuration
+.claude/deployment-config.local.json
 
 
 

@@ -2,16 +2,18 @@
 
 This guide provides step-by-step instructions for adding a new customer to the Label Data Exporter production deployment.
 
+**Note**: Actual production URL is stored in `.claude/deployment-config.local.json` (gitignored).
+
 ## Overview
 
-Each customer gets a **custom Shopify app** installed in their store. All custom apps point to the same production URL (`https://simplelabels-prod.fly.dev`), but sessions are isolated by shop domain to ensure data security.
+Each customer gets a **custom Shopify app** installed in their store. All custom apps point to the same production URL (https://<production-app>.fly.dev), but sessions are isolated by shop domain to ensure data security.
 
 **Time to onboard**: 5-10 minutes per customer
 
 ## Prerequisites
 
 - Access to the customer's Shopify admin (requires store owner or staff with app development permissions)
-- Production environment deployed and running at `https://simplelabels-prod.fly.dev`
+- Production environment deployed and running at `https://<production-app>.fly.dev`
 
 ## Onboarding Steps
 
@@ -58,14 +60,14 @@ Each customer gets a **custom Shopify app** installed in their store. All custom
 
    **App URL**:
    ```
-   https://simplelabels-prod.fly.dev
+   https://<production-app>.fly.dev
    ```
 
    **Allowed redirection URL(s)** (click "Add URL" for each):
    ```
-   https://simplelabels-prod.fly.dev/api/auth
-   https://simplelabels-prod.fly.dev/api/auth/callback
-   https://simplelabels-prod.fly.dev/auth/callback
+   https://<production-app>.fly.dev/api/auth
+   https://<production-app>.fly.dev/api/auth/callback
+   https://<production-app>.fly.dev/auth/callback
    ```
 
 4. Click **Save** at the bottom of the page
@@ -110,7 +112,7 @@ To confirm the customer's session was created correctly:
 
 ```bash
 # Connect to production database
-flyctl postgres connect --app simplelabels-prod-db
+flyctl postgres connect --app <production-app>-db
 
 # Query sessions
 SELECT shop, id, "isOnline", "accessToken" IS NOT NULL as has_token
@@ -191,7 +193,7 @@ If you need to remove a customer's access:
 
 ```bash
 # Connect to production database
-flyctl postgres connect --app simplelabels-prod-db
+flyctl postgres connect --app <production-app>-db
 
 # Delete customer's sessions
 DELETE FROM "Session" WHERE shop = 'customer-store-name.myshopify.com';
@@ -206,7 +208,7 @@ DELETE FROM "Session" WHERE shop = 'customer-store-name.myshopify.com';
 **Solution**:
 1. Go to the custom app in Shopify admin
 2. Click **Configuration** tab
-3. Verify all URLs point to: `https://simplelabels-prod.fly.dev`
+3. Verify all URLs point to: `https://<production-app>.fly.dev`
 4. Ensure redirection URLs include `/api/auth`, `/api/auth/callback`, and `/auth/callback`
 
 ### "Permission Denied" Error
@@ -224,9 +226,9 @@ DELETE FROM "Session" WHERE shop = 'customer-store-name.myshopify.com';
 **Cause**: Session not being created or database connection issue
 
 **Solution**:
-1. Check production app is running: `flyctl status --app simplelabels-prod`
-2. Check database connection: `flyctl postgres status --app simplelabels-prod-db`
-3. View logs: `flyctl logs --app simplelabels-prod`
+1. Check production app is running: `flyctl status --app <production-app>`
+2. Check database connection: `flyctl postgres status --app <production-app>-db`
+3. View logs: `flyctl logs --app <production-app>`
 4. Verify session is created in database (see Step 9)
 
 ### Products Not Showing

@@ -196,17 +196,19 @@ All app routes use `authenticate.admin(request)` from `app/shopify.server.js` to
 
 This app uses a **three-tier deployment strategy**:
 
-1. **Development**: Local development with SQLite database
-2. **Staging**: fly.io deployment for testing (simplelabeldataexporter.fly.dev)
-3. **Production**: fly.io deployment serving all customers (simplelabels-prod.fly.dev)
+1. **Development**: Local development with PostgreSQL (Docker)
+2. **Staging**: fly.io deployment for testing
+3. **Production**: fly.io deployment serving all customers
+
+**Note**: Actual deployment URLs are stored in `.claude/deployment-config.local.json` (gitignored).
 
 ### Environment Overview
 
 | Environment | Database | URL | Purpose |
 |------------|----------|-----|---------|
 | Development | PostgreSQL (Docker) | localhost (via tunnel) | Active development |
-| Staging | PostgreSQL | simplelabeldataexporter.fly.dev | Pre-production testing |
-| Production | PostgreSQL | simplelabels-prod.fly.dev | Customer deployments |
+| Staging | PostgreSQL | <staging-app>.fly.dev | Pre-production testing |
+| Production | PostgreSQL | <production-app>.fly.dev | Customer deployments |
 
 ### Multi-Tenant Production
 
@@ -235,8 +237,8 @@ shopify app dev                                           # Start local dev serv
 flyctl deploy                                             # Deploy to staging
 
 # Production Deployment
-flyctl deploy --config fly.production.toml --app simplelabels-prod
+flyctl deploy --config fly.production.toml --app <production-app>
 
 # Database Access
-flyctl postgres connect --app simplelabels-prod-db       # Connect to production DB
+flyctl postgres connect --app <production-app>-db       # Connect to production DB
 ```

@@ -1,0 +1,40 @@
+#!/bin/bash
+
+# Pre-commit hook to prevent sensitive data leaks
+# This hook checks for common secrets patterns and deployment URLs
+
+echo "Running pre-commit security checks..."
+
+# Check for common secrets patterns being ADDED (excluding documentation, example files, and githooks)
+# Only check lines starting with + (additions), not - (deletions)
+if git diff --cached --diff-filter=ACM -- ':(exclude)*.md' ':(exclude)*.sh' ':(exclude)*.example' ':(exclude)*.example.*' ':(exclude).githooks/*' | grep "^+" | grep -iE "password\s*=|api.*key\s*=|secret\s*=|token\s*="; then
+    echo ""
+    echo "⚠️  Possible secret detected in commit!"
+    echo "Please review and use environment variables instead."
+    echo ""
+    exit 1
+fi
+
+# Check for hardcoded deployment URLs being ADDED (excluding config files, documentation, and githooks)
+# Only check lines starting with + (additions), not - (deletions)
+if git diff --cached --diff-filter=ACM -- ':(exclude)fly.toml' ':(exclude)fly.production.toml' ':(exclude)*.md' ':(exclude)*.sh' ':(exclude).githooks/*' | grep "^+" | grep -E "simplelabel.*\.fly\.dev"; then
+    echo ""
+    echo "⚠️  Deployment URL detected in commit!"
+    echo "Use placeholder URLs like <app-name>.fly.dev instead."
+    echo "Actual URLs should be in .claude/deployment-config.local.json (gitignored)"
+    echo ""
+    exit 1
+fi
+
+# Check for hardcoded database passwords being ADDED (excluding documentation, scripts, and githooks)
+# Only check lines starting with + (additions), not - (deletions)
+if git diff --cached --diff-filter=ACM -- ':(exclude)*.md' ':(exclude)*.sh' ':(exclude)*.example' ':(exclude)*.example.*' ':(exclude).githooks/*' | grep "^+" | grep -iE "devpassword|postgres_password\s*:\s*[^$]"; then
+    echo ""
+    echo "⚠️  Database password detected in commit!"
+    echo "Use environment variables (.env.docker) instead of hardcoded passwords."
+    echo ""
+    exit 1
+fi
+
+echo "✅ Pre-commit security checks passed"
+exit 0

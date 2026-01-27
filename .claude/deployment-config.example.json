@@ -1,0 +1,12 @@
+{
+  "staging": {
+    "app": "<staging-app-name>",
+    "url": "<staging-app-name>.fly.dev",
+    "db": "<staging-app-name>-db"
+  },
+  "production": {
+    "app": "<production-app-name>",
+    "url": "<production-app-name>.fly.dev",
+    "db": "<production-app-name>-db"
+  }
+}

@@ -2,6 +2,8 @@
 
 This guide covers deploying the Label Data Exporter to staging and production environments on fly.io.
 
+**Note**: Actual deployment URLs are stored in `.claude/deployment-config.local.json` (gitignored). Copy `.claude/deployment-config.example.json` to get started.
+
 ## Architecture Overview
 
 ```
@@ -11,14 +13,14 @@ Development (Local)
 └── Purpose: Active development and testing
 
 Staging (fly.io)
-├── App: simplelabeldataexporter.fly.dev
-├── Database: simplelabeldataexporter-db (PostgreSQL)
-├── Shopify App: LabelDataExporter (test app in Partners)
+├── App: <staging-app>.fly.dev
+├── Database: <staging-app>-db (PostgreSQL)
+├── Shopify App: Test app in Partners Dashboard
 └── Purpose: Pre-production testing, QA, demos
 
 Production (fly.io)
-├── App: simplelabels-prod.fly.dev
-├── Database: simplelabels-prod-db (PostgreSQL)
+├── App: <production-app>.fly.dev
+├── Database: <production-app>-db (PostgreSQL)
 ├── Shopify Apps: Custom app per customer store
 └── Purpose: Serves all customer stores (multi-tenant)
 ```
@@ -43,7 +45,7 @@ Production (fly.io)
 
 ## Deploying to Staging
 
-Staging uses the existing `simplelabeldataexporter` app.
+Staging uses your configured staging app (see `.claude/deployment-config.local.json`).
 
 ### Deploy Process
 
@@ -53,39 +55,39 @@ Staging uses the existing `simplelabeldataexporter` app.
 # Deploy to staging (uses fly.toml by default)
 flyctl deploy
 
-# Or explicitly specify the config file
-flyctl deploy --config fly.toml --app simplelabeldataexporter
+# Or explicitly specify the config file and app name
+flyctl deploy --config fly.toml --app <staging-app>
 ```
 
 ### Check Deployment Status
 
 ```bash
 # View app status
-flyctl status --app simplelabeldataexporter
+flyctl status --app <staging-app>
 
 # View logs
-flyctl logs --app simplelabeldataexporter
+flyctl logs --app <staging-app>
 
 # Open the app in browser
-flyctl open --app simplelabeldataexporter
+flyctl open --app <staging-app>
 ```
 
 ### Staging Environment Details
 
-- **URL**: https://simplelabeldataexporter.fly.dev
-- **Database**: Attached PostgreSQL instance (simplelabeldataexporter-db)
+- **URL**: https://<staging-app>.fly.dev
+- **Database**: Attached PostgreSQL instance (<staging-app>-db)
 - **Shopify App**: Test app in Shopify Partners dashboard
 - **Test Store**: Install to your test/development store
 
 ## Setting Up Production (First Time)
 
-Production uses a **new** fly.io deployment: `simplelabels-prod`
+Production uses a separate fly.io deployment from staging.
 
 ### Step 1: Create Production App
 
 ```bash
 # Create the production app
-flyctl apps create simplelabels-prod --org your-org-name
+flyctl apps create <production-app> --org your-org-name
 ```
 
 ### Step 2: Create Production Database
@@ -93,14 +95,14 @@ flyctl apps create simplelabels-prod --org your-org-name
 ```bash
 # Create PostgreSQL database for production
 flyctl postgres create \
-  --name simplelabels-prod-db \
+  --name <production-app>-db \
   --region iad \
   --initial-cluster-size 1 \
   --vm-size shared-cpu-1x \
   --volume-size 1
 
 # Attach database to the app (sets DATABASE_URL automatically)
-flyctl postgres attach simplelabels-prod-db --app simplelabels-prod
+flyctl postgres attach <production-app>-db --app <production-app>
 ```
 
 ### Step 3: Set Production Secrets
@@ -109,7 +111,7 @@ flyctl postgres attach simplelabels-prod-db --app simplelabels-prod
 # Set environment variables
 flyctl secrets set \
   NODE_ENV=production \
-  --app simplelabels-prod
+  --app <production-app>
 ```
 
 **Note**: Unlike staging, production doesn't need `SHOPIFY_API_KEY` or `SHOPIFY_API_SECRET` because it uses custom apps (configured per customer store).
@@ -118,20 +120,20 @@ flyctl secrets set \
 
 ```bash
 # Deploy using production configuration
-flyctl deploy --config fly.production.toml --app simplelabels-prod
+flyctl deploy --config fly.production.toml --app <production-app>
 ```
 
 ### Step 5: Verify Production Deployment
 
 ```bash
 # Check status
-flyctl status --app simplelabels-prod
+flyctl status --app <production-app>
 
 # Test health endpoint
-curl https://simplelabels-prod.fly.dev/healthz
+curl https://<production-app>.fly.dev/healthz
 
 # View logs
-flyctl logs --app simplelabels-prod
+flyctl logs --app <production-app>
 ```
 
 ## Deploying Updates to Production
@@ -140,13 +142,13 @@ After the initial setup, deploying updates is simple:
 
 ```bash
 # Deploy latest code to production
-flyctl deploy --config fly.production.toml --app simplelabels-prod
+flyctl deploy --config fly.production.toml --app <production-app>
 ```
 
 **Recommended Workflow**:
 1. Test changes locally with `shopify app dev`
-2. Deploy to staging and test: `flyctl deploy --app simplelabeldataexporter`
-3. Once verified, deploy to production: `flyctl deploy --config fly.production.toml --app simplelabels-prod`
+2. Deploy to staging and test: `flyctl deploy --app <staging-app>`
+3. Once verified, deploy to production: `flyctl deploy --config fly.production.toml --app <production-app>`
 
 ## Database Management
 
@@ -154,30 +156,30 @@ flyctl deploy --config fly.production.toml --app simplelabels-prod
 
 ```bash
 # Staging database
-flyctl postgres status --app simplelabeldataexporter-db
+flyctl postgres status --app <staging-app>-db
 
 # Production database
-flyctl postgres status --app simplelabels-prod-db
+flyctl postgres status --app <production-app>-db
 ```
 
 ### Connect to Database
 
 ```bash
 # Staging
-flyctl postgres connect --app simplelabeldataexporter-db
+flyctl postgres connect --app <staging-app>-db
 
 # Production
-flyctl postgres connect --app simplelabels-prod-db
+flyctl postgres connect --app <production-app>-db
 ```
 
 ### Database Backups
 
 ```bash
 # List backups
-flyctl postgres backup list --app simplelabels-prod-db
+flyctl postgres backup list --app <production-app>-db
 
 # Create manual backup
-flyctl postgres backup create --app simplelabels-prod-db
+flyctl postgres backup create --app <production-app>-db
 ```
 
 ### Migrations
@@ -192,7 +194,7 @@ Migrations run automatically during deployment via the `docker-start` script in 
 **Manual migration** (if needed):
 ```bash
 # SSH into the app
-flyctl ssh console --app simplelabels-prod
+flyctl ssh console --app <production-app>
 
 # Run migrations
 npm run setup
@@ -204,20 +206,20 @@ npm run setup
 
 ```bash
 # Real-time logs
-flyctl logs --app simplelabels-prod
+flyctl logs --app <production-app>
 
 # Logs from last hour
-flyctl logs --app simplelabels-prod --time 1h
+flyctl logs --app <production-app> --time 1h
 ```
 
 ### App Metrics
 
 ```bash
 # View metrics
-flyctl metrics --app simplelabels-prod
+flyctl metrics --app <production-app>
 
 # VM metrics
-flyctl vm status --app simplelabels-prod
+flyctl vm status --app <production-app>
 ```
 
 ### Health Checks
@@ -225,7 +227,7 @@ flyctl vm status --app simplelabels-prod
 The app exposes a `/healthz` endpoint for health checks:
 
 ```bash
-curl https://simplelabels-prod.fly.dev/healthz
+curl https://<production-app>.fly.dev/healthz
 ```
 
 Should return HTTP 200 if healthy.
@@ -236,20 +238,20 @@ If a deployment causes issues, you can rollback to a previous version:
 
 ```bash
 # List all releases
-flyctl releases --app simplelabels-prod
+flyctl releases --app <production-app>
 
 # Rollback to previous version
-flyctl releases rollback <version-number> --app simplelabels-prod
+flyctl releases rollback <version-number> --app <production-app>
 ```
 
 Example:
 ```bash
-$ flyctl releases --app simplelabels-prod
+$ flyctl releases --app <production-app>
 VERSION  STATUS    DESCRIPTION                  USER            DATE
 v5       complete  Deploy successful            you@email.com   2m ago
 v4       complete  Deploy successful            you@email.com   2h ago
 
-$ flyctl releases rollback v4 --app simplelabels-prod
+$ flyctl releases rollback v4 --app <production-app>
 ```
 
 ## Scaling
@@ -258,10 +260,10 @@ $ flyctl releases rollback v4 --app simplelabels-prod
 
 ```bash
 # Scale to 2GB memory
-flyctl scale memory 2048 --app simplelabels-prod
+flyctl scale memory 2048 --app <production-app>
 
 # Scale CPUs
-flyctl scale vm shared-cpu-2x --app simplelabels-prod
+flyctl scale vm shared-cpu-2x --app <production-app>
 ```
 
 ### Auto-scaling
@@ -279,25 +281,25 @@ This keeps costs low while ensuring availability.
 
 ```bash
 # View current secrets (values are hidden)
-flyctl secrets list --app simplelabeldataexporter
+flyctl secrets list --app <staging-app>
 
 # Set secrets
 flyctl secrets set \
   SHOPIFY_API_KEY=your-staging-api-key \
   SHOPIFY_API_SECRET=your-staging-api-secret \
-  --app simplelabeldataexporter
+  --app <staging-app>
 ```
 
 ### Production Secrets
 
 ```bash
 # View current secrets
-flyctl secrets list --app simplelabels-prod
+flyctl secrets list --app <production-app>
 
 # Set secrets (if needed)
 flyctl secrets set \
   NODE_ENV=production \
-  --app simplelabels-prod
+  --app <production-app>
 ```
 
 ## Multi-Tenant Architecture (Production)
@@ -305,14 +307,14 @@ flyctl secrets set \
 Production serves multiple customer stores from a single deployment:
 
 1. **Each customer** has a custom Shopify app installed in their store
-2. **Each custom app** points to: `https://simplelabels-prod.fly.dev`
+2. **Each custom app** points to: `https://<production-app>.fly.dev`
 3. **Sessions are isolated** by the `shop` field in the database
 4. **Access tokens** are shop-specific - customers cannot access each other's data
 
 To verify session isolation:
 ```bash
 # Connect to production database
-flyctl postgres connect --app simplelabels-prod-db
+flyctl postgres connect --app <production-app>-db
 
 # View all sessions
 SELECT shop, id, "isOnline" FROM "Session";
@@ -326,7 +328,7 @@ SELECT shop, id, "isOnline" FROM "Session";
 
 ```bash
 # Check build logs
-flyctl logs --app simplelabels-prod
+flyctl logs --app <production-app>
 
 # Try deploying with verbose output
 flyctl deploy --config fly.production.toml --verbose
@@ -336,13 +338,13 @@ flyctl deploy --config fly.production.toml --verbose
 
 ```bash
 # Verify DATABASE_URL is set
-flyctl secrets list --app simplelabels-prod
+flyctl secrets list --app <production-app>
 
 # Verify database is running
-flyctl postgres status --app simplelabels-prod-db
+flyctl postgres status --app <production-app>-db
 
 # Test connection
-flyctl ssh console --app simplelabels-prod
+flyctl ssh console --app <production-app>
 # Inside the container:
 echo $DATABASE_URL
 ```
@@ -351,20 +353,20 @@ echo $DATABASE_URL
 
 ```bash
 # Check app status
-flyctl status --app simplelabels-prod
+flyctl status --app <production-app>
 
 # View recent logs
-flyctl logs --app simplelabels-prod
+flyctl logs --app <production-app>
 
 # Restart the app
-flyctl apps restart simplelabels-prod
+flyctl apps restart <production-app>
 ```
 
 ### Migration Errors
 
 ```bash
 # SSH into the app
-flyctl ssh console --app simplelabels-prod
+flyctl ssh console --app <production-app>
 
 # Check migration status
 npx prisma migrate status
