@@ -13,9 +13,21 @@ import { generateUniqueBarcode } from "../utils/barcode";
 export async function loader({ request }) {
   const { admin } = await authenticate.admin(request);
 
-  // Get search query from URL
+  // Get search query and status filter from URL
   const url = new URL(request.url);
   const searchQuery = url.searchParams.get("search") || "";
+  const statusFilter = url.searchParams.get("status") || "active"; // default to active
+
+  // Parse status filter (can be: "active", "draft", or "active,draft")
+  // Sanitize to only allow valid statuses
+  const statuses = statusFilter
+    .split(',')
+    .map(s => s.trim().toLowerCase())
+    .filter(s => s === 'active' || s === 'draft')
+    .map(s => s.toUpperCase());
+
+  // Ensure at least one status is selected (default to ACTIVE if invalid)
+  const validStatuses = statuses.length > 0 ? statuses : ['ACTIVE'];
 
   // Sanitize and validate search input
   let sanitizedQuery = "";
@@ -32,11 +44,26 @@ export async function loader({ request }) {
   }
 
   // Build GraphQL query string for Shopify product search
-  // Search by product title, variant SKU, barcode, or vendor
-  let graphqlQuery = "";
+  const queryParts = [];
+
+  // Add search conditions
   if (sanitizedQuery) {
-    // Use sanitized input with wildcards applied by us (not user-controlled)
-    graphqlQuery = `title:*${sanitizedQuery}* OR sku:*${sanitizedQuery}* OR barcode:*${sanitizedQuery}* OR vendor:*${sanitizedQuery}*`;
+    queryParts.push(
+      `title:*${sanitizedQuery}* OR sku:*${sanitizedQuery}* OR barcode:*${sanitizedQuery}* OR vendor:*${sanitizedQuery}*`
+    );
+  }
+
+  // Add status filter
+  // Build: "status:ACTIVE OR status:DRAFT"
+  if (validStatuses.length > 0) {
+    const statusQuery = validStatuses.map(s => `status:${s}`).join(' OR ');
+    queryParts.push(`(${statusQuery})`);
+  }
+
+  // Combine with AND
+  let graphqlQuery = "";
+  if (queryParts.length > 0) {
+    graphqlQuery = queryParts.join(' AND ');
   }
 
   // Fetch products with variants
@@ -59,6 +86,7 @@ export async function loader({ request }) {
         id: variant.id,
         productId: product.id,
         productTitle: product.title,
+        productStatus: product.status,
         vendor: product.vendor || "",
         variantTitle: variant.title,
         displayName: variant.displayName,
@@ -76,6 +104,7 @@ export async function loader({ request }) {
     variants: variantRows,
     hasNextPage: data.data.products.pageInfo.hasNextPage,
     searchQuery,
+    statusFilter: validStatuses.map(s => s.toLowerCase()).join(','),
   };
 }
 
@@ -180,13 +209,16 @@ export async function action({ request }) {
  * Component: Product selection table with export functionality
  */
 export default function ExportPage() {
-  const { variants: initialVariants, searchQuery } = useLoaderData();
+  const { variants: initialVariants, searchQuery, statusFilter } = useLoaderData();
   const shopify = useAppBridge();
   const submit = useSubmit();
   const fetcher = useFetcher();
   const barcodeFetcher = useFetcher();
   const [selectedIds, setSelectedIds] = useState([]);
   const [searchInput, setSearchInput] = useState(searchQuery || "");
+  const [activeStatuses, setActiveStatuses] = useState(
+    () => statusFilter ? statusFilter.split(',') : ['active']
+  );
   const debounceTimer = useRef(null);
   const [labelQuantities, setLabelQuantities] = useState({});
   const [variants, setVariants] = useState(initialVariants);
@@ -289,8 +321,32 @@ export default function ExportPage() {
     debounceTimer.current = setTimeout(() => {
       const formData = new FormData();
       formData.append("search", value);
+      formData.append("status", activeStatuses.join(','));
       submit(formData, { method: "get" });
     }, 500);
+  };
+
+  // Handle status filter toggle
+  const handleStatusToggle = (status) => {
+    let newStatuses;
+
+    if (activeStatuses.includes(status)) {
+      // Don't allow deselecting if it's the only one selected
+      if (activeStatuses.length === 1) {
+        return;
+      }
+      newStatuses = activeStatuses.filter(s => s !== status);
+    } else {
+      newStatuses = [...activeStatuses, status];
+    }
+
+    setActiveStatuses(newStatuses);
+
+    // Submit to loader with new status filter
+    const formData = new FormData();
+    formData.append("search", searchInput);
+    formData.append("status", newStatuses.join(','));
+    submit(formData, { method: "get" });
   };
 
   // Update variants when loader data changes (e.g., after search)
@@ -465,6 +521,35 @@ export default function ExportPage() {
           display: none;
         }
 
+        /* Status Filter Pills */
+        button:active {
+          transform: scale(0.96);
+        }
+
+        /* Status Badge */
+        .status-badge {
+          display: inline-block;
+          padding: 2px 8px;
+          border-radius: 10px;
+          font-size: 11px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.3px;
+          margin-left: 8px;
+          vertical-align: middle;
+        }
+
+        .status-badge.active {
+          background: rgba(0, 128, 96, 0.1);
+          color: #008060;
+          border: 1px solid rgba(0, 128, 96, 0.2);
+        }
+
+        .status-badge.draft {
+          background: rgba(255, 165, 0, 0.1);
+          color: #FFA500;
+          border: 1px solid rgba(255, 165, 0, 0.2);
+        }
 
         /* Quantity Stepper Controls */
         .quantity-controls {
@@ -753,22 +838,114 @@ export default function ExportPage() {
             file (.xlsx) formatted for label printing.
           </s-paragraph>
 
-          {/* Search input */}
-          <div style={{ marginBottom: "16px" }}>
-            <input
-              type="text"
-              placeholder="Search by product name, SKU, barcode, or vendor..."
-              value={searchInput}
-              onChange={handleSearchChange}
-              style={{
-                width: "100%",
-                padding: "10px 12px",
-                fontSize: "14px",
-                border: "1px solid #c9cccf",
-                borderRadius: "4px",
-                boxSizing: "border-box",
-              }}
-            />
+          {/* Search and Status Filter Row */}
+          <div style={{
+            display: 'flex',
+            gap: '12px',
+            marginBottom: '12px',
+            flexDirection: isDesktop ? 'row' : 'column',
+            alignItems: isDesktop ? 'center' : 'stretch',
+          }}>
+            {/* Search input */}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <input
+                type="text"
+                placeholder="Search by product name, SKU, barcode, or vendor..."
+                value={searchInput}
+                onChange={handleSearchChange}
+                style={{
+                  width: "100%",
+                  padding: "10px 12px",
+                  fontSize: "14px",
+                  border: "1px solid #c9cccf",
+                  borderRadius: "6px",
+                  boxSizing: "border-box",
+                }}
+              />
+            </div>
+
+            {/* Status Filter Pills */}
+            <div style={{
+              display: 'flex',
+              gap: '8px',
+              flexShrink: 0,
+            }}>
+              <button
+                onClick={() => handleStatusToggle('active')}
+                style={{
+                  padding: isDesktop ? '8px 16px' : '12px 16px',
+                  fontSize: isDesktop ? '14px' : '15px',
+                  fontWeight: 600,
+                  borderRadius: '20px',
+                  border: '2px solid #008060',
+                  background: activeStatuses.includes('active') ? '#008060' : '#ffffff',
+                  color: activeStatuses.includes('active') ? '#ffffff' : '#5c6f68',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  whiteSpace: 'nowrap',
+                  flex: isDesktop ? 'initial' : 1,
+                  justifyContent: 'center',
+                  boxShadow: activeStatuses.includes('active') ? '0 2px 8px rgba(0, 128, 96, 0.3)' : 'none',
+                }}
+              >
+                {activeStatuses.includes('active') && (
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="3,8 6,11 13,4"></polyline>
+                  </svg>
+                )}
+                Active
+              </button>
+
+              <button
+                onClick={() => handleStatusToggle('draft')}
+                style={{
+                  padding: isDesktop ? '8px 16px' : '12px 16px',
+                  fontSize: isDesktop ? '14px' : '15px',
+                  fontWeight: 600,
+                  borderRadius: '20px',
+                  border: '2px solid #FFA500',
+                  background: activeStatuses.includes('draft') ? '#FFA500' : '#ffffff',
+                  color: activeStatuses.includes('draft') ? '#ffffff' : '#8c6a3d',
+                  cursor: 'pointer',
+                  transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  whiteSpace: 'nowrap',
+                  flex: isDesktop ? 'initial' : 1,
+                  justifyContent: 'center',
+                  boxShadow: activeStatuses.includes('draft') ? '0 2px 8px rgba(255, 165, 0, 0.3)' : 'none',
+                }}
+              >
+                {activeStatuses.includes('draft') && (
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="3,8 6,11 13,4"></polyline>
+                  </svg>
+                )}
+                Draft
+              </button>
+            </div>
+          </div>
+
+          {/* Filter Status Info */}
+          <div style={{
+            marginBottom: '16px',
+            padding: '12px',
+            background: '#f9fafb',
+            borderRadius: '6px',
+            fontSize: '13px',
+            color: '#6d7175',
+          }}>
+            <strong style={{ color: '#202223' }}>Showing:</strong>{' '}
+            {activeStatuses.length === 2
+              ? 'Active and Draft products'
+              : activeStatuses.includes('active')
+              ? 'Active products only'
+              : 'Draft products only'
+            } • Archived products are always hidden
           </div>
 
           {/* Select All - Mobile */}
@@ -809,7 +986,14 @@ export default function ExportPage() {
                   </div>
 
                   <div className="card-info">
-                    <h3 className="card-title">{variant.productTitle}</h3>
+                    <h3 className="card-title">
+                      {variant.productTitle}
+                      {activeStatuses.length === 2 && (
+                        <span className={`status-badge ${variant.productStatus.toLowerCase()}`}>
+                          {variant.productStatus}
+                        </span>
+                      )}
+                    </h3>
                     {variant.variantTitle && variant.variantTitle !== "Default Title" && (
                       <p className="card-variant">{variant.variantTitle}</p>
                     )}
@@ -1021,7 +1205,14 @@ export default function ExportPage() {
                         </td>
                         <td style={{ padding: "12px 8px" }}>
                           <div>
-                            <strong>{variant.productTitle}</strong>
+                            <strong>
+                              {variant.productTitle}
+                              {activeStatuses.length === 2 && (
+                                <span className={`status-badge ${variant.productStatus.toLowerCase()}`}>
+                                  {variant.productStatus}
+                                </span>
+                              )}
+                            </strong>
                             {variant.variantTitle &&
                               variant.variantTitle !== "Default Title" && (
                                 <div
