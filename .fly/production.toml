@@ -6,7 +6,7 @@ app = 'simplelabels-prod'
 primary_region = 'iad'
 
 [build]
-  dockerfile = ".docker/Dockerfile"
+  dockerfile = "../.docker/Dockerfile"
 
 [env]
   PORT = '3000'
