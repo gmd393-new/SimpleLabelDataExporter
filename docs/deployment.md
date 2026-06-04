@@ -79,6 +79,37 @@ flyctl open --app <staging-app>
 - **Shopify App**: Test app in Shopify Partners dashboard
 - **Test Store**: Install to your test/development store
 
+## Recreating the Staging Database
+
+The staging database (`simplelabeldataexporter-db`) is intentionally destroyed when not in use to save costs (~$5/month). Recreate it when you need to do staging deploys.
+
+```bash
+# Create the staging PostgreSQL cluster
+flyctl postgres create \
+  --name simplelabeldataexporter-db \
+  --region iad \
+  --initial-cluster-size 1 \
+  --vm-size shared-cpu-1x \
+  --volume-size 1
+
+# Attach it to the staging app (sets DATABASE_URL automatically)
+flyctl postgres attach simplelabeldataexporter-db --app simplelabeldataexporter
+
+# Scale the staging app back up to 1 machine
+flyctl scale count 1 --app simplelabeldataexporter --yes
+
+# Deploy (migrations run automatically on startup)
+flyctl deploy --config .fly/staging.toml --app simplelabeldataexporter
+```
+
+To tear staging back down when done:
+
+```bash
+flyctl scale count 0 --app simplelabeldataexporter --yes
+flyctl postgres detach simplelabeldataexporter-db --app simplelabeldataexporter
+flyctl apps destroy simplelabeldataexporter-db --yes
+```
+
 ## Setting Up Production (First Time)
 
 Production uses a separate fly.io deployment from staging.
