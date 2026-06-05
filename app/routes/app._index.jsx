@@ -224,6 +224,7 @@ export default function ExportPage() {
   const [variants, setVariants] = useState(initialVariants);
   const [generatingBarcodeFor, setGeneratingBarcodeFor] = useState(null);
   const [isDesktop, setIsDesktop] = useState(false);
+  const [bottomInset, setBottomInset] = useState(0);
   const downloadInitiatedRef = useRef(null);
 
   // Get effective quantity (uses default if not customized)
@@ -376,6 +377,39 @@ export default function ExportPage() {
 
     return () => mediaQuery.removeEventListener('change', handler);
   }, []);
+
+  // Compute the bottom offset needed to clear Shopify's floating mobile nav bar.
+  // App Bridge is *supposed* to set --shopify-safe-area-inset-bottom to the bar's
+  // height, but in the Shopify mobile app it often resolves to 0px. So when we're
+  // running inside the native app (shopify.environment.mobile), fall back to a
+  // fixed estimate; otherwise honor the variable if it's populated.
+  useEffect(() => {
+    const FALLBACK_NAV_HEIGHT = 90; // approx height of the floating nav bar (incl. margin)
+
+    const readInset = () => {
+      const raw = getComputedStyle(document.documentElement)
+        .getPropertyValue('--shopify-safe-area-inset-bottom')
+        .trim();
+      const fromVar = parseInt(raw, 10);
+      const inMobileApp = !!shopify?.environment?.mobile;
+      setBottomInset(
+        Math.max(
+          Number.isFinite(fromVar) ? fromVar : 0,
+          inMobileApp ? FALLBACK_NAV_HEIGHT : 0
+        )
+      );
+    };
+
+    readInset();
+    // Re-read after App Bridge finishes initializing and on viewport changes.
+    const timer = setTimeout(readInset, 500);
+    window.addEventListener('resize', readInset);
+
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('resize', readInset);
+    };
+  }, [shopify]);
 
   // Handle barcode generation response
   useEffect(() => {
@@ -726,7 +760,7 @@ export default function ExportPage() {
 
         /* Sticky Bottom Action Bar */
         .sticky-action-bar {
-          position: sticky;
+          position: fixed;
           bottom: 0;
           left: 0;
           right: 0;
@@ -962,7 +996,10 @@ export default function ExportPage() {
           </div>
 
           {/* Mobile Card Layout */}
-          <div className="mobile-cards">
+          <div
+            className="mobile-cards"
+            style={{ paddingBottom: `${bottomInset + 130}px` }}
+          >
             {variants.map((variant) => (
               <div
                 key={variant.id}
@@ -1392,7 +1429,7 @@ export default function ExportPage() {
 
       {/* Sticky Bottom Action Bar - Mobile Only */}
       {!isDesktop && (
-        <div className="sticky-action-bar">
+        <div className="sticky-action-bar" style={{ bottom: `${bottomInset}px` }}>
           <div className="action-bar-status">
             {selectedIds.length > 0 ? (
               <>
