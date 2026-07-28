@@ -1,317 +1,305 @@
 # Customer Onboarding Guide
 
-This guide provides step-by-step instructions for adding a new customer to the Label Data Exporter production deployment.
+Step-by-step instructions for adding a new customer store to the Label Data Exporter.
 
-**Note**: Actual production URL is stored in `.claude/deployment-config.local.json` (gitignored).
+**Note**: Real store domains, app names, and URLs live in
+`.claude/deployment-config.local.json` (gitignored). This guide uses placeholders
+throughout — see [SECURITY.md](./security.md) for why. Substitute:
 
-## Overview
+| Placeholder | Meaning |
+|---|---|
+| `<store-slug>` | short identifier for the store, dashes removed |
+| `<store>.myshopify.com` | the store's Shopify domain |
+| `<store-app>` | that store's Fly app name |
+| `<production-db>` | the shared production Postgres cluster |
 
-Each customer gets a **custom Shopify app** installed in their store. All custom apps point to the same production URL (https://<production-app>.fly.dev), but sessions are isolated by shop domain to ensure data security.
+## Architecture: one Partners app AND one deployment per store
 
-**Time to onboard**: 5-10 minutes per customer
+Read this before following the steps — it explains why onboarding looks the way it does.
+
+This app uses **custom distribution**. A custom-distribution Shopify app installs on
+**exactly one store**, with a single exception: multiple stores inside one Shopify
+**Plus** organization. And critically:
+
+> **An app's distribution method can never be changed after it is selected.**
+
+So each customer store needs its own Partners app, with its own client ID and secret.
+Because `app/shopify.server.js` builds a single `shopifyApp()` instance from
+`SHOPIFY_API_KEY`/`SHOPIFY_API_SECRET`, one running deployment can serve exactly one
+Partners app — and therefore one store.
+
+Each store therefore gets:
+
+- its own **Partners app** (custom distribution, pinned to that store's domain)
+- its own **Fly deployment** running the identical image
+- its own **logical database** on the shared `<production-db>` Postgres cluster
+
+Sharing one Postgres cluster keeps the cost flat; separate logical databases keep each
+store's migrations independent, so one store's deploy can't apply schema changes under
+another store's running code.
+
+### This does not scale forever
+
+Onboarding is ~20 minutes of mostly-dashboard work per store, and every release must
+deploy every store. That is fine for a handful. At roughly **five stores**, switch to
+routing multiple Partners apps through a single deployment (hostname →
+`shopifyApp()` instance map). See
+`docs/superpowers/specs/2026-07-28-second-store-deployment-design.md` for why that was
+deferred rather than built.
+
+### What this is NOT
+
+Older versions of this guide described creating a custom app from inside the merchant's
+own Shopify admin ("Settings → Apps → Develop apps"). **That does not work with this
+codebase.** Admin-created custom apps issue a static Admin API access token and never
+perform the embedded OAuth handshake this app implements. Shopify has also stopped
+allowing new custom apps to be created that way. Ignore any instructions of that shape.
+
+## Store inventory
+
+The authoritative list of live stores is **not in this repository**. It lives in:
+
+- `.claude/deployment-config.local.json` (gitignored) — domains, app names, databases
+- `.fly/production*.toml` — one config file per store deployment
+- The Shopify Partner Dashboard — one custom-distribution app per store
+
+Keep all three in sync when onboarding or removing a store.
+
+## Naming convention
+
+For a store slug `<store-slug>` (the `.myshopify.com` subdomain, dashes removed):
+
+| Thing | Pattern |
+|---|---|
+| Fly app | `<production-app-prefix>-<store-slug>` |
+| Fly config | `.fly/production-<store-slug>.toml` |
+| App URL | `https://<store-app>.fly.dev` |
+| Postgres DB | assigned by `postgres attach` |
 
 ## Prerequisites
 
-- Access to the customer's Shopify admin (requires store owner or staff with app development permissions)
-- Production environment deployed and running at `https://<production-app>.fly.dev`
+- Shopify Partner Dashboard access
+- The customer's `.myshopify.com` domain, **confirmed in writing** (see Step 2)
+- `flyctl` installed and authenticated (`flyctl auth login`)
 
-## Onboarding Steps
+---
 
-### Step 1: Access Customer's Shopify Admin
+## Step 1 — Create the Partners app
 
-1. Log into the customer's Shopify store admin
-2. Navigate to: **Settings** → **Apps and sales channels**
-3. Click **Develop apps** (or **Develop apps for your store** if first time)
+Partner Dashboard → **Apps** → **Create app**.
 
-**Note**: If "Develop apps" is not visible, you may need to enable it:
-- Click **Allow custom app development**
-- Read and confirm the warning message
+Name it so the merchant recognises it in their admin, e.g.
+`Label Data Exporter — <Store Name>`.
 
-### Step 2: Create Custom App
+## Step 2 — Choose distribution ⚠️ irreversible
 
-1. Click **Create an app** button
-2. Enter app details:
-   - **App name**: `Label Data Exporter` (or customer's preferred name)
-   - **App developer**: Your name or company name
-3. Click **Create app**
+App → **Distribution** → **Choose distribution** → **Custom distribution** → enter the
+store's `.myshopify.com` domain.
 
-### Step 3: Configure API Scopes
+**Verify the domain character by character before confirming.** Neither the distribution
+method nor the pinned store can be changed afterwards. A typo means abandoning the app
+and creating another one.
 
-1. Click **Configure Admin API scopes** button
-2. In the search box, type: `write_products`
-3. Check the box for: ☑️ `write_products`
-   - **Description**: "Read and write products, variants, and collections"
-   - **Note**: This scope is required for both reading product data AND generating barcodes for variants
-4. Scroll down and click **Save**
+Do **not** click *Generate link* yet — that is Step 9, after the deployment is live.
 
-### Step 4: Install the App
+## Step 3 — Configure URLs and scopes
 
-1. Click the **API credentials** tab
-2. Click **Install app** button
-3. Confirm the installation by clicking **Install** in the modal
+App → **Configuration**:
 
-**Important**: The app must be installed before you can configure the URLs in the next step.
+- **App URL**: `https://<store-app>.fly.dev`
+- **Allowed redirection URLs**:
+  ```
+  https://<store-app>.fly.dev/api/auth
+  https://<store-app>.fly.dev/auth/callback
+  ```
+- **Access scopes**: `write_products`
 
-### Step 5: Configure App URLs
+`write_products` covers both reading product data for export and writing generated
+barcodes back to variants. It must match the `SCOPES` secret set in Step 6 — a mismatch
+causes a re-authorization loop rather than a clear error.
 
-1. After installation, click the **Configuration** tab
-2. Scroll to **App URL** section
-3. Set the following URLs:
+Copy the **client ID** and **API secret key** from the API credentials page; you need
+them in Step 6.
 
-   **App URL**:
-   ```
-   https://<production-app>.fly.dev
-   ```
-
-   **Allowed redirection URL(s)** (click "Add URL" for each):
-   ```
-   https://<production-app>.fly.dev/api/auth
-   https://<production-app>.fly.dev/api/auth/callback
-   https://<production-app>.fly.dev/auth/callback
-   ```
-
-4. Click **Save** at the bottom of the page
-
-### Step 6: Get API Credentials
-
-1. Go back to the **API credentials** tab
-2. You'll see:
-   - **API key**: A string like `abc123def456...`
-   - **API secret key**: Click **Reveal once** to see it
-
-3. **Copy and save these credentials securely** (optional, for your records)
-   - These are specific to this customer's store
-   - You can always access them later from this page
-   - The production app doesn't need these in environment variables (they're stored by Shopify)
-
-### Step 7: Access the App
-
-1. From the customer's Shopify admin, navigate to: **Apps**
-2. You should see **Label Data Exporter** in the list
-3. Click on it to open the app
-4. The app should load and show the product export interface
-
-**Expected behavior**:
-- First access triggers OAuth flow (authentication)
-- You'll see a permission consent screen
-- After accepting, the app loads and shows the product list
-- Customer can select products and export to Excel
-
-### Step 8: Test Functionality
-
-1. **Search for products**: Try searching in the search box
-2. **Select products**: Check some product checkboxes
-3. **Export**: Click "Export Selected to Excel"
-4. **Verify download**: An Excel file should download with the selected products
-
-Example filename: `label-export-2026-01-25.xlsx`
-
-### Step 9: Verify Session Created
-
-To confirm the customer's session was created correctly:
+## Step 4 — Create the Fly app
 
 ```bash
-# Connect to production database
-flyctl postgres connect --app <production-app>-db
-
-# Query sessions
-SELECT shop, id, "isOnline", "accessToken" IS NOT NULL as has_token
-FROM "Session"
-WHERE shop = 'customer-store-name.myshopify.com';
-
-# You should see at least one row for this customer
+flyctl apps create <store-app>
 ```
 
-Expected output:
-```
-                    shop                    |         id          | isOnline | has_token
---------------------------------------------+---------------------+----------+-----------
- customer-store-name.myshopify.com          | online_abc123...    | t        | t
-```
-
-## Customer Handoff
-
-Once the app is installed and tested, inform the customer:
-
-1. **Access the app**:
-   - Go to Shopify Admin → Apps
-   - Click "Label Data Exporter"
-
-2. **How to use**:
-   - Search for products by name, SKU, barcode, or vendor
-   - Select products using checkboxes
-   - Click "Generate" button for variants without barcodes (optional)
-   - Click "Export Selected to Excel"
-   - Open the downloaded file in Excel or label printing software
-
-3. **Support contact**: Provide your support email/contact
-
-## Updating Existing Customers
-
-If you have existing customers who were onboarded before the barcode generation feature was added, they'll need to update their app permissions from `read_products` to `write_products`.
-
-### Update Process
-
-1. Contact the customer and explain the new barcode generation feature
-2. Have them log into their Shopify admin
-3. Navigate to: **Settings** → **Apps and sales channels** → **Develop apps**
-4. Click on their **Label Data Exporter** custom app
-5. Click **Configuration** tab
-6. Click **Configure Admin API scopes**
-7. In the search box, type: `write_products`
-8. **Uncheck** `read_products` (if checked)
-9. **Check** ☑️ `write_products`
-10. Click **Save**
-11. They'll be prompted to **reinstall the app** - click **Install app**
-12. Confirm by clicking **Install** in the modal
-
-**Note**: The app will continue to work with `read_products` for export functionality, but barcode generation will only work after upgrading to `write_products`.
-
-### Verification
-
-After updating:
-1. Customer opens the app
-2. Finds a product variant without a barcode
-3. Clicks the "Generate" button
-4. An 8-digit barcode should be generated and appear immediately
-5. The barcode should also be saved in Shopify admin
-
-## Removing a Customer
-
-If you need to remove a customer's access:
-
-### Option 1: Customer Uninstalls (Recommended)
-
-1. Customer goes to: **Settings** → **Apps and sales channels**
-2. Click on **Label Data Exporter**
-3. Click **Delete app**
-4. Confirm deletion
-
-**Note**: The app handles uninstall webhooks and automatically cleans up the session.
-
-### Option 2: Manual Deletion (if needed)
+## Step 5 — Attach the database
 
 ```bash
-# Connect to production database
-flyctl postgres connect --app <production-app>-db
-
-# Delete customer's sessions
-DELETE FROM "Session" WHERE shop = 'customer-store-name.myshopify.com';
+flyctl postgres attach <production-db> --app <store-app>
 ```
+
+This creates a **new logical database and user on the existing cluster** and sets
+`DATABASE_URL` automatically. It does not create a new cluster, so it adds no cost.
+
+## Step 6 — Set secrets
+
+```bash
+flyctl secrets set \
+  NODE_ENV=production \
+  SCOPES=write_products \
+  SHOPIFY_APP_URL=https://<store-app>.fly.dev \
+  SHOPIFY_API_KEY=<client ID from Step 3> \
+  SHOPIFY_API_SECRET=<API secret from Step 3> \
+  --app <store-app>
+```
+
+All five are required. `app/shopify.server.js` reads `SHOPIFY_API_KEY`,
+`SHOPIFY_API_SECRET`, `SCOPES`, and `SHOPIFY_APP_URL`.
+
+**`SHOPIFY_APP_URL` is the one that bites.** If it is missing, or copied from another
+store's deployment, OAuth redirects land on the wrong deployment and present as a
+redirect loop — not as an obviously wrong URL.
+
+## Step 7 — Add the deployment to the repo
+
+1. Copy `.fly/production.toml` to `.fly/production-<store-slug>.toml`, changing only the
+   `app = ` line.
+2. Add the store to `.claude/deployment-config.local.json`.
+
+`scripts/deploy-all.sh` discovers stores by globbing `.fly/production*.toml`, so adding
+the config file is all that is needed to include the store in future releases. A store
+without a config file silently stops receiving updates.
+
+## Step 8 — Deploy
+
+```bash
+./scripts/deploy-all.sh
+```
+
+Then confirm it answers:
+
+```bash
+curl https://<store-app>.fly.dev/healthz    # expect HTTP 200
+```
+
+## Step 9 — Generate the install link and send it
+
+Partner Dashboard → app → **Distribution** → **Generate link** → copy.
+
+Send it to the store owner. They open it, review the requested `write_products`
+permission, and click **Install**.
+
+The deployment must already be answering before this step. Installing against a
+hostname that isn't up fails in a way that is hard to diagnose from the merchant's side.
+
+## Step 10 — Verify
+
+1. Open the app from the store's **Apps** menu; it should load embedded in the admin.
+2. Search for a product.
+3. Select products and click **Export Selected to Excel**; confirm the `.xlsx`
+   downloads and contains the expected rows.
+4. Confirm the session landed in the right database:
+   ```bash
+   flyctl postgres connect --app <production-db>
+   \c <store database>
+   SELECT shop, id, "isOnline", "accessToken" IS NOT NULL AS has_token FROM "Session";
+   ```
+   Expect at least one row, with `shop` matching the store domain.
+5. Confirm the **other** stores still load and export — `deploy-all.sh` deployed them
+   too.
+
+---
+
+## Customer handoff
+
+1. **Access**: Shopify Admin → **Apps** → the app's name.
+2. **Usage**: search by name, SKU, barcode, or vendor; select products; optionally click
+   **Generate** for variants missing barcodes; click **Export Selected to Excel**; open
+   the file in Excel or label-printing software.
+3. **Support**: provide your contact address.
+
+## Changing scopes for an existing store
+
+Scopes live in two places that must agree:
+
+1. Partner Dashboard → app → **Configuration** → **Access scopes**
+2. The `SCOPES` Fly secret on that store's deployment
+
+Update both, redeploy that store, then have the merchant reopen the app. Shopify prompts
+them to approve the new permissions. The `app/scopes_update` webhook
+(`shopify.app.toml:18-20`) keeps the stored session scope in sync.
+
+## Removing a store
+
+**Merchant-initiated (preferred)**: the merchant uninstalls from Shopify Admin →
+**Settings** → **Apps and sales channels** → **Uninstall**. The `app/uninstalled`
+webhook cleans up the session automatically.
+
+**Full decommission**, once the merchant has uninstalled:
+
+```bash
+flyctl apps destroy <store-app>
+```
+
+Then delete `.fly/production-<store-slug>.toml` and remove the store from
+`.claude/deployment-config.local.json`. Leave the Partners app in place — deleting it
+frees nothing, and its pinned domain cannot be reused anyway.
 
 ## Troubleshooting
 
-### App Won't Load / "Page Not Found"
+### Redirect loop during install
 
-**Cause**: App URLs not configured correctly
+Almost always `SHOPIFY_APP_URL`. Confirm it exactly matches the App URL in the Partner
+Dashboard, including scheme and no trailing slash:
 
-**Solution**:
-1. Go to the custom app in Shopify admin
-2. Click **Configuration** tab
-3. Verify all URLs point to: `https://<production-app>.fly.dev`
-4. Ensure redirection URLs include `/api/auth`, `/api/auth/callback`, and `/auth/callback`
+```bash
+flyctl secrets list --app <store-app>
+```
 
-### "Permission Denied" Error
+Also confirm the redirection URLs in the dashboard include both `/api/auth` and
+`/auth/callback`.
 
-**Cause**: Missing `write_products` scope
+### "Page not found" when opening the app
 
-**Solution**:
-1. Go to custom app → **API credentials** → **Configure Admin API scopes**
-2. Check ☑️ `write_products`
-3. Click **Save**
-4. **Uninstall and reinstall** the app to apply new permissions
+App URL in the dashboard points at the wrong deployment, or that Fly app is down:
 
-### OAuth Loop / Keeps Redirecting
+```bash
+flyctl status --app <store-app>
+flyctl logs --app <store-app>
+```
 
-**Cause**: Session not being created or database connection issue
+### Repeated permission prompts
 
-**Solution**:
-1. Check production app is running: `flyctl status --app <production-app>`
-2. Check database connection: `flyctl postgres status --app <production-app>-db`
-3. View logs: `flyctl logs --app <production-app>`
-4. Verify session is created in database (see Step 9)
+`SCOPES` secret and dashboard access scopes disagree. Make them match, redeploy.
 
-### Products Not Showing
+### Barcode "Generate" button fails
 
-**Cause**: Customer has no products, or search is too specific
+The store is authorized for `read_products` rather than `write_products`. Follow
+*Changing scopes for an existing store*.
 
-**Solution**:
-1. Verify the store has products published
-2. Try clearing the search box to show all products
-3. Check that products are not archived/draft
+### Products not showing
 
-### Export Button Not Working
+Confirm the store actually has products, clear the search box, and check the
+Active/Draft status filter.
 
-**Cause**: JavaScript error or no products selected
+### One store works, another is broken after a release
 
-**Solution**:
-1. Open browser console (F12) and check for errors
-2. Ensure at least one product is selected (checkboxes)
-3. Try refreshing the page and selecting again
+They are on different versions — a `deploy-all.sh` run partially failed, or a store is
+missing a `.fly/production*.toml` config. Check:
 
-## Security Notes
+```bash
+./scripts/deploy-all.sh --check
+flyctl releases --app <store-app>
+```
 
-### Data Isolation
+## Security notes
 
-Each customer's data is isolated:
-- Sessions are stored with `shop` field containing the store domain
-- Access tokens are shop-specific
-- One customer cannot access another customer's data
-- The app checks the shop domain on every request
+- Sessions are keyed by `shop` (`prisma/schema.prisma`), and each deployment serves a
+  single store, so stores are isolated both by row and by process.
+- Access tokens are per-store and never leave that store's deployment.
+- Client secrets live only in Fly secrets and the Partner Dashboard — never in the repo.
+- Store domains and deployment URLs stay out of this repository; see
+  [SECURITY.md](./security.md).
+- A merchant uninstalling revokes their token immediately; the `app/uninstalled` webhook
+  removes the session.
 
-### Access Control
+## Cost
 
-Custom app credentials are:
-- Stored in the customer's Shopify admin (not in your production environment)
-- Specific to that customer's store
-- Can be regenerated by the customer at any time
-- Revoked automatically if the customer deletes the app
-
-### Best Practices
-
-1. **Never share API credentials** across customer stores
-2. **Each customer must have their own custom app** (don't reuse apps)
-3. **Test in a test store first** before onboarding real customers
-4. **Keep documentation updated** if the onboarding process changes
-
-## Scaling Considerations
-
-The production deployment is designed for multi-tenancy:
-
-- **Database**: PostgreSQL with automatic connection pooling
-- **Auto-scaling**: Machines start on demand, stop when idle
-- **Memory**: 1GB should handle 100+ concurrent customers
-- **Storage**: Database volume scales automatically
-
-**When to upgrade**:
-- If you have 50+ active customers, consider upgrading to 2GB memory
-- Monitor database size and upgrade volume if needed
-- Use `flyctl metrics` to track resource usage
-
-## Cost Per Customer
-
-Each additional customer adds **$0 in infrastructure costs** because:
-- All customers share the same production deployment
-- Database stores only lightweight session data
-- Machines scale to zero when not in use
-
-Current monthly cost: ~$10 regardless of customer count (within reasonable limits)
-
-## Next Steps
-
-After onboarding your first customer:
-
-1. Monitor production logs for any errors
-2. Ask customer for feedback on usability
-3. Document any customer-specific configurations or requests
-4. Set up a customer list/spreadsheet to track who's onboarded
-
-## Customer List Template
-
-Consider maintaining a spreadsheet with:
-
-| Customer Name | Shop Domain | Install Date | Contact Email | Notes |
-|--------------|-------------|--------------|---------------|-------|
-| Wife's Store | example.myshopify.com | 2026-01-25 | email@example.com | First customer |
-
-This helps track who's using the app and when they were onboarded.
+Adding a store adds one Fly app. Machines scale to zero when idle
+(`min_machines_running = 0`), so the marginal cost is small — the Postgres cluster and
+its volume are already paid for and are not duplicated.

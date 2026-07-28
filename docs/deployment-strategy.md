@@ -27,13 +27,14 @@ This document provides a high-level overview of the deployment architecture. For
 └─────────────────────────────────────────────────────────┘
                         ↓ After Testing
 ┌─────────────────────────────────────────────────────────┐
-│ PRODUCTION (fly.io)                                     │
-│ - App: <production-app>.fly.dev                        │
-│ - Database: <production-app>-db (PostgreSQL)           │
-│ - Purpose: Serves all customer stores (multi-tenant)    │
-│ - Shopify Apps: Custom app per customer                │
-│ - Deploy: flyctl deploy --config .fly/production.toml    │
-│ - Docs: DEPLOYMENT.md, CUSTOMER_ONBOARDING.md          │
+│ PRODUCTION (fly.io) — one deployment PER STORE          │
+│ - Apps: one Fly app per store, same image on each       │
+│         <store-a-app>  → <store-a>.myshopify.com        │
+│         <store-b-app>  → <store-b>.myshopify.com        │
+│ - Database: <production-db>, one logical DB per store   │
+│ - Shopify Apps: one custom-distribution app per store   │
+│ - Deploy: ./scripts/deploy-all.sh (all stores together) │
+│ - Docs: DEPLOYMENT.md, CUSTOMER_ONBOARDING.md           │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -74,13 +75,13 @@ flyctl deploy --config .fly/production.toml --app <production-app>
 
 ### Adding Customers
 
-**Process** (5-10 minutes per customer):
-1. Create custom app in customer's Shopify admin
-2. Configure API scopes: `read_products`
-3. Install app in customer's store
-4. Set app URLs to point to production
-5. Test functionality
-6. Verify session created in database
+**Process** (~20 minutes per store):
+1. Create a Partners app; choose **custom distribution** and pin the store domain
+2. Configure app URLs and `write_products` scope
+3. Create a Fly app and attach the shared Postgres cluster
+4. Set that store's secrets (including its own `SHOPIFY_APP_URL`)
+5. Add the store to `scripts/deploy-all.sh` and deploy
+6. Generate the install link, send it to the merchant, verify
 
 📖 See [CUSTOMER_ONBOARDING.md](./CUSTOMER_ONBOARDING.md) for step-by-step guide
 
@@ -92,29 +93,39 @@ flyctl deploy --config .fly/production.toml --app <production-app>
 - **Staging**: Test in production-like environment before releasing
 - **Production**: Stable environment for paying customers
 
-### Why Custom Apps?
+### Why Custom Distribution?
 
 ✅ **Advantages**:
-- No Shopify app review required (faster onboarding)
-- Better access control (can revoke per customer)
-- Simpler setup (5-10 minutes vs weeks for app review)
-- No ongoing Shopify Partner requirements
+- No Shopify app review required (weeks of calendar time avoided)
+- Revocable per store
+- No App Store listing, privacy policy, or GDPR compliance webhooks required
 
 ❌ **Trade-offs**:
-- Manual onboarding per customer
-- Not listed in Shopify App Store
+- Manual onboarding per store
+- **Installs on exactly one store** (unless the stores share a Plus organization)
+- **Distribution method can never be changed** — reaching a new store always means a
+  new Partners app
 
-### Why Single Production Deployment?
+### Why One Deployment Per Store?
 
-✅ **Advantages**:
-- Lower cost (~$10/month total vs $10/month per customer)
-- Easier to maintain and update
-- Centralized monitoring and logs
+Not a preference — a consequence. `app/shopify.server.js` builds a single
+`shopifyApp()` instance from one `SHOPIFY_API_KEY`/`SHOPIFY_API_SECRET` pair, so one
+deployment can serve one Partners app, and a custom-distribution Partners app serves one
+store.
 
-✅ **How it works**:
-- App already supports multi-tenancy via `Session.shop` field
-- Each customer session is isolated by shop domain
-- Access tokens are shop-specific
+✅ **How costs stay flat**: all stores share the `<production-db>` Postgres cluster,
+each with its own logical database (`flyctl postgres attach` creates one on the existing
+cluster). Fly machines scale to zero when idle. Separate logical databases also keep each
+store's migrations independent, so one store's deploy cannot apply schema changes beneath
+another store's running code.
+
+❌ **The cost**: every release must deploy every store, or they drift.
+`scripts/deploy-all.sh` exists to prevent that and fails loudly if stores end up on
+different versions.
+
+⚠️ **Ceiling**: this stops being reasonable at roughly **five stores**. Past that, route
+multiple Partners apps through one deployment via a hostname → `shopifyApp()` instance
+map. See `docs/superpowers/specs/2026-07-28-second-store-deployment-design.md`.
 
 ## File Reference
 
@@ -123,10 +134,16 @@ flyctl deploy --config .fly/production.toml --app <production-app>
 | File | Purpose | Environment |
 |------|---------|-------------|
 | `.env.example` | Environment template | Development |
-| `fly.toml` | Staging config | Staging |
-| `fly.production.toml` | Production config | Production |
+| `.fly/staging.toml` | Staging config | Staging |
+| `.fly/production.toml` | Production config — `<store-a>` | Production |
+| `.fly/production-<store-b-slug>.toml` | Production config — `<store-b>` | Production |
+| `scripts/deploy-all.sh` | Deploys every production store together | Production |
 | `prisma/schema.prisma` | Database schema | All |
-| `shopify.app.toml` | Shopify CLI config | Development |
+| `shopify.app.toml` | Shopify CLI config — **staging app only** | Development |
+
+**Note**: the production Partners apps are configured entirely in the Partner Dashboard
+and have no `shopify.app.*.toml` in this repository. `shopify.app.toml` tracks the
+staging app (`Simple Exporter for Labels`), not either production app.
 
 ### Documentation Files
 
@@ -155,12 +172,19 @@ SHOPIFY_API_KEY="..."          # Set via flyctl secrets
 SHOPIFY_API_SECRET="..."       # Set via flyctl secrets
 ```
 
-### Production
+### Production (set per store, on each store's Fly app)
 ```bash
-DATABASE_URL="postgres://..."  # Auto-set by fly.io
-NODE_ENV=production            # Set via flyctl secrets
-# No SHOPIFY_* vars needed (uses custom apps)
+DATABASE_URL="postgres://..."                          # Auto-set by postgres attach
+NODE_ENV=production                                    # Set via flyctl secrets
+SCOPES="write_products"                                # Must match dashboard scopes
+SHOPIFY_APP_URL="https://<store-app>.fly.dev"  # PER STORE — do not copy
+SHOPIFY_API_KEY="..."                                  # That store's Partners app
+SHOPIFY_API_SECRET="..."                               # That store's Partners app
 ```
+
+All of these are required — `app/shopify.server.js:11-15` reads four of them.
+`SHOPIFY_APP_URL` differs per store; copying it between deployments causes OAuth
+redirect loops.
 
 ## Database Strategy
 
@@ -179,22 +203,31 @@ NODE_ENV=production            # Set via flyctl secrets
 - Same migration files work across development, staging, and production
 - Catches PostgreSQL-specific issues during local development
 
-## Multi-Tenant Security
+## Store Isolation
 
-Each customer's data is isolated:
+Each customer's data is isolated at four levels:
 
-1. **Session Isolation**: Sessions stored with `shop` field (e.g., `customer.myshopify.com`)
-2. **Token Isolation**: Access tokens are shop-specific
-3. **Query Isolation**: App verifies shop domain on every request
-4. **App Isolation**: Each customer has their own custom app credentials
+1. **Process Isolation**: each store has its own deployment, authenticating only that
+   store's Partners app
+2. **Database Isolation**: each deployment has its own logical database on the shared
+   cluster
+3. **Session Isolation**: sessions stored with `shop` field (e.g., `<store-a>.myshopify.com`)
+4. **Token Isolation**: access tokens are per-store and never leave that store's
+   deployment
 
 **Verification**:
-```sql
--- View all customer sessions
-SELECT shop, id, "isOnline" FROM "Session";
+```bash
+flyctl postgres connect --app <production-db>
 
--- Each row = one customer store
+\l                              -- one database per store
+\c <store-database>
+SELECT shop, id, "isOnline" FROM "Session";
 ```
+
+Because databases are per-store, there is no single query listing every store. The
+inventory lives in the **Current stores** table in
+[CUSTOMER_ONBOARDING.md](./customer-onboarding.md) and in `DEPLOYMENTS` in
+`scripts/deploy-all.sh`.
 
 ## Monitoring
 
@@ -231,11 +264,15 @@ flyctl postgres connect --app <production-app>-db
 |-----------|------------------|
 | Staging app | ~$5 |
 | Staging database | ~$5 |
-| Production app | ~$5 |
-| Production database | ~$5 |
-| **Total** | **~$20** |
+| Production database cluster (shared by all stores) | ~$5 |
+| Production app — `<store-a-app>` | ~$5 |
+| Production app — `<store-b-app>` | ~$5 |
+| **Total** | **~$25** |
 
-**Note**: Costs are per environment, NOT per customer. Adding customers is free.
+**Note**: adding a store adds one Fly app, not a database cluster —
+`flyctl postgres attach` creates a logical database on the existing cluster. The listed
+app costs are ceilings; machines scale to zero when idle
+(`min_machines_running = 0`), so lightly-used stores cost considerably less.
 
 ## Rollback Procedure
 

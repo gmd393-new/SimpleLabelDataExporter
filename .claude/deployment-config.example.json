@@ -1,12 +1,21 @@
 {
+  "_comment": "Copy to deployment-config.local.json (gitignored) and fill in real values. Production runs one deployment per store; see docs/customer-onboarding.md.",
   "staging": {
     "app": "<staging-app-name>",
     "url": "<staging-app-name>.fly.dev",
     "db": "<staging-app-name>-db"
   },
   "production": {
-    "app": "<production-app-name>",
-    "url": "<production-app-name>.fly.dev",
-    "db": "<production-app-name>-db"
+    "dbCluster": "<production-db-cluster>",
+    "stores": {
+      "<store-slug>": {
+        "shopDomain": "<store>.myshopify.com",
+        "partnersApp": "<Partners app name>",
+        "app": "<production-app-prefix>-<store-slug>",
+        "url": "<production-app-prefix>-<store-slug>.fly.dev",
+        "flyConfig": ".fly/production-<store-slug>.toml",
+        "db": "<logical database on dbCluster>"
+      }
+    }
   }
 }
