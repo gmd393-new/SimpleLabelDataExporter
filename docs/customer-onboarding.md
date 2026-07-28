@@ -106,20 +106,43 @@ Do **not** click *Generate link* yet — that is Step 9, after the deployment is
 
 App → **Configuration**:
 
-- **App URL**: `https://<store-app>.fly.dev`
-- **Allowed redirection URLs**:
-  ```
-  https://<store-app>.fly.dev/api/auth
-  https://<store-app>.fly.dev/auth/callback
-  ```
-- **Access scopes**: `write_products`
+| Field | Value | Why it matters |
+|---|---|---|
+| **Scopes** | `write_products` | **Most important.** Drives Shopify managed installation — if empty, the install grants nothing and the app fails to authenticate afterwards. |
+| **Use legacy install flow** | leave **unchecked** | Unchecked selects managed install + token exchange, which is what this codebase implements. |
+| **App URL** | `https://<store-app>.fly.dev` | Must exactly match the `SHOPIFY_APP_URL` secret from Step 6. |
+| **Embed app in Shopify admin** | checked | The app renders embedded. |
+| **Redirect URLs** | leave empty | Unused unless legacy install flow is enabled. See below. |
+
+### Why there are no redirect URLs
+
+`@shopify/shopify-app-react-router` (v1.x) authenticates embedded apps with **token
+exchange** backed by **Shopify managed installation**, not the legacy authorization-code
+grant. Per Shopify's documentation this strategy "eliminates the redirects that were
+previously necessary." The install link triggers a managed install, the app loads
+embedded, and it exchanges the session token for an access token directly — no
+`/auth/callback` round trip ever occurs.
+
+So an empty **Redirect URLs** field is correct, not an oversight. The app still serves
+`/auth` and `/auth/login` routes, but they are not part of the install path.
+
+If you ever tick **Use legacy install flow**, redirect URLs become mandatory:
+`https://<store-app>.fly.dev/api/auth` and `https://<store-app>.fly.dev/auth/callback`.
+
+### Scopes
 
 `write_products` covers both reading product data for export and writing generated
 barcodes back to variants. It must match the `SCOPES` secret set in Step 6 — a mismatch
 causes a re-authorization loop rather than a clear error.
 
+### Credentials
+
 Copy the **client ID** and **API secret key** from the API credentials page; you need
 them in Step 6.
+
+**Note**: the app name field caps at 30 characters and truncates silently. Since each
+store only ever sees its own app, a store suffix is unnecessary — a plain product name
+avoids the truncation entirely.
 
 ## Step 4 — Create the Fly app
 
@@ -253,6 +276,16 @@ frees nothing, and its pinned domain cannot be reused anyway.
 
 ## Troubleshooting
 
+### App fails to authenticate after a successful install
+
+Check **Scopes** on the Partners app first. Managed installation grants exactly what is
+declared there; if it is empty, the merchant installs successfully and then the app
+cannot authenticate. Confirm it matches the `SCOPES` secret:
+
+```bash
+flyctl ssh console --app <store-app> -C "printenv SCOPES"
+```
+
 ### Redirect loop during install
 
 Almost always `SHOPIFY_APP_URL`. Confirm it exactly matches the App URL in the Partner
@@ -262,8 +295,8 @@ Dashboard, including scheme and no trailing slash:
 flyctl secrets list --app <store-app>
 ```
 
-Also confirm the redirection URLs in the dashboard include both `/api/auth` and
-`/auth/callback`.
+If **Use legacy install flow** is enabled, also confirm the redirect URLs are populated.
+With managed install (the default) that field is unused and should be empty.
 
 ### "Page not found" when opening the app
 
