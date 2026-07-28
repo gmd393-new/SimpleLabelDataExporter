@@ -1,0 +1,39 @@
+# Production Fly.io Configuration — second store
+# Deploy with: ./scripts/deploy-all.sh  (deploys every store together)
+#
+# Serves one customer store via its own custom-distribution Partners app.
+# Identical to production.toml except for the app name — all production
+# deployments MUST stay in lockstep, which is what deploy-all.sh enforces.
+#
+# Store domain and credentials: .claude/deployment-config.local.json (gitignored)
+# Rationale: docs/superpowers/specs/2026-07-28-second-store-deployment-design.md
+
+app = 'simplelabels-prod-thegoatstock'
+primary_region = 'iad'
+
+[build]
+  dockerfile = "../.docker/Dockerfile"
+
+[env]
+  PORT = '3000'
+  HOST = '0.0.0.0'
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ['app']
+
+  [[http_service.checks]]
+    interval = '15s'
+    timeout = '10s'
+    grace_period = '5s'
+    method = 'GET'
+    path = '/healthz'
+
+[[vm]]
+  memory = '1gb'
+  cpu_kind = 'shared'
+  cpus = 1
