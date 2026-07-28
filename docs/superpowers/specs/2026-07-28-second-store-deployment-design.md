@@ -137,26 +137,27 @@ existing install link cannot reach it.
 
 The remaining phases are required.
 
-### Phase 1 — `AppDistribution` correction (separate commit, deployed alone)
+### Phase 1 — `AppDistribution` correction — ⏭️ SKIPPED (decided 2026-07-28)
 
-`app/shopify.server.js:18` sets `distribution: AppDistribution.AppStore`, but this is a
-custom-distribution app managed in the Partner Dashboard, which per Shopify's
+`app/shopify.server.js:18` sets `distribution: AppDistribution.AppStore`, but these are
+custom-distribution apps managed in the Partner Dashboard, which per Shopify's
 `shopifyApp` reference should be `AppDistribution.SingleMerchant`.
 
-Sequenced first and deployed by itself because it is shared code that alters store A's
-live authentication behaviour, and because it fixes a latent inconsistency rather than a
-current outage. Deploy staging → verify → prod A → verify store A loads and exports.
+**Deliberately not changed.** The reasoning:
 
-**Precondition to check first**: staging is only a faithful test if the staging Partners
-app is also on custom distribution. If it is on public distribution, or its distribution
-is unset, then staging exercises a different code path and passing there proves nothing
-about prod A. In that case either skip this phase entirely or accept that prod A is the
-first real test — decide before deploying, not after.
+- It fixes a latent inconsistency, not a current outage. Store A authenticates and
+  exports correctly today with `AppStore`.
+- It is shared code, so it would alter the live authentication behaviour of a working
+  production store.
+- Staging could only validate it if the staging Partners app is *also* on custom
+  distribution, which was not confirmed. Testing it there might have proven nothing
+  while implying it had.
+- Store B is unaffected either way — it inherits whatever store A already does
+  successfully.
 
-**Rollback**: revert the one line and redeploy.
-
-Skipping this phase is a legitimate outcome. Store B works either way, inheriting
-whatever store A already does successfully.
+Revisit only if an auth-flow bug appears that this would plausibly explain. The fix is
+one line; the risk is entirely in deploying it to a working store for no present
+benefit.
 
 ### Phase 2 — Partners app B (dashboard, user-executed)
 
