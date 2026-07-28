@@ -15,8 +15,10 @@ database.sqlite
 
 .env
 .env.*
+.env-*
 !.env.example
 !.env.docker.example
+!.env-store.example
 .env.docker
 *.local
 

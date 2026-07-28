@@ -138,22 +138,33 @@ This creates a **new logical database and user on the existing cluster** and set
 
 ## Step 6 — Set secrets
 
+Copy the template, fill in the two credentials from Step 3, and apply it:
+
 ```bash
-flyctl secrets set \
-  NODE_ENV=production \
-  SCOPES=write_products \
-  SHOPIFY_APP_URL=https://<store-app>.fly.dev \
-  SHOPIFY_API_KEY=<client ID from Step 3> \
-  SHOPIFY_API_SECRET=<API secret from Step 3> \
-  --app <store-app>
+cp .env-store.example .env-<store-slug>
+# edit .env-<store-slug>, then:
+bash scripts/set-store-secrets.sh .env-<store-slug>
 ```
 
-All five are required. `app/shopify.server.js` reads `SHOPIFY_API_KEY`,
-`SHOPIFY_API_SECRET`, `SCOPES`, and `SHOPIFY_APP_URL`.
+Use the script rather than typing `flyctl secrets set` by hand. It keeps the API secret
+out of your shell history and terminal scrollback, applies everything in one call so the
+app restarts once, and refuses to run if the env file is not gitignored or has somehow
+become tracked. Add `--dry-run` to see what it would set without changing anything.
+
+`.gitignore` covers `.env-*`. Verify before filling one in:
+
+```bash
+git check-ignore .env-<store-slug>    # must print the filename
+```
+
+All five secrets are required — `app/shopify.server.js` reads `SHOPIFY_API_KEY`,
+`SHOPIFY_API_SECRET`, `SCOPES`, and `SHOPIFY_APP_URL`, and `DATABASE_URL` comes from
+Step 5.
 
 **`SHOPIFY_APP_URL` is the one that bites.** If it is missing, or copied from another
 store's deployment, OAuth redirects land on the wrong deployment and present as a
-redirect loop — not as an obviously wrong URL.
+redirect loop — not as an obviously wrong URL. The script rejects a missing `https://`
+scheme and a trailing slash for the same reason.
 
 ## Step 7 — Add the deployment to the repo
 
