@@ -106,11 +106,21 @@ echo ""
 echo "4. Checking for hardcoded secrets in tracked files..."
 echo "----------------------------------------"
 
-# Search for hardcoded passwords in tracked files
-if git grep -i "postgres_password.*devpassword" -- ':(exclude).env.docker' ':(exclude).env.docker.example' >/dev/null 2>&1; then
-    print_result 1 "Found hardcoded password 'devpassword' in tracked files"
+# Search for the old rotated password in real config, not in prose about it.
+# Markdown, scripts, and .githooks are excluded because security documentation, this
+# script's own grep pattern, and the hook's detection rules all legitimately contain
+# the string they exist to warn about. Without these exclusions the check always
+# fails, which trains everyone to ignore it. Mirrors the pre-commit hook's own
+# *.md / *.sh exclusions.
+if git grep -i "postgres_password.*devpassword" -- \
+        ':(exclude).env.docker' \
+        ':(exclude).env.docker.example' \
+        ':(exclude).githooks/*' \
+        ':(exclude)scripts/*' \
+        ':(exclude)*.md' >/dev/null 2>&1; then
+    print_result 1 "Found hardcoded password 'devpassword' in tracked config"
 else
-    print_result 0 "No hardcoded 'devpassword' in tracked files"
+    print_result 0 "No hardcoded 'devpassword' in tracked config"
 fi
 
 # Search for deployment URLs in tracked files (excluding comments and examples)
@@ -125,29 +135,41 @@ echo ""
 echo "5. Checking Docker configuration..."
 echo "----------------------------------------"
 
-# Check if docker-compose.yml uses env_file
-if grep -q "env_file:" docker-compose.yml; then
-    print_result 0 "docker-compose.yml uses env_file for environment variables"
+COMPOSE_FILE=".docker/docker-compose.yml"
+
+if [ ! -f "$COMPOSE_FILE" ]; then
+    print_result 1 "$COMPOSE_FILE not found"
 else
-    print_result 1 "docker-compose.yml does NOT use env_file"
-fi
-
-# Verify Docker Compose can load environment variables
-if docker compose config >/dev/null 2>&1; then
-    print_result 0 "Docker Compose configuration is valid"
-else
-    print_result 1 "Docker Compose configuration is INVALID"
-fi
-
-# Check if password is loaded from .env.docker
-if [ -f .env.docker ]; then
-    LOADED_PASSWORD=$(docker compose config 2>/dev/null | grep "POSTGRES_PASSWORD:" | awk '{print $2}')
-    EXPECTED_PASSWORD=$(grep "POSTGRES_PASSWORD=" .env.docker | cut -d'=' -f2)
-
-    if [ "$LOADED_PASSWORD" = "$EXPECTED_PASSWORD" ]; then
-        print_result 0 "Docker Compose loads password from .env.docker"
+    # Check if docker-compose uses env_file
+    if grep -q "env_file:" "$COMPOSE_FILE"; then
+        print_result 0 "docker-compose.yml uses env_file for environment variables"
     else
-        print_result 1 "Docker Compose does NOT load password from .env.docker"
+        print_result 1 "docker-compose.yml does NOT use env_file"
+    fi
+
+    # Docker may not be installed or running; that is not a security failure.
+    if ! command -v docker >/dev/null 2>&1; then
+        print_warning "docker not installed — skipping compose validation"
+    elif ! docker info >/dev/null 2>&1; then
+        print_warning "docker daemon not running — skipping compose validation"
+    else
+        if docker compose -f "$COMPOSE_FILE" config >/dev/null 2>&1; then
+            print_result 0 "Docker Compose configuration is valid"
+        else
+            print_result 1 "Docker Compose configuration is INVALID"
+        fi
+
+        # Check the password actually comes from .env.docker
+        if [ -f .env.docker ]; then
+            LOADED_PASSWORD=$(docker compose -f "$COMPOSE_FILE" config 2>/dev/null | grep "POSTGRES_PASSWORD:" | awk '{print $2}')
+            EXPECTED_PASSWORD=$(grep "POSTGRES_PASSWORD=" .env.docker | cut -d'=' -f2)
+
+            if [ -n "$LOADED_PASSWORD" ] && [ "$LOADED_PASSWORD" = "$EXPECTED_PASSWORD" ]; then
+                print_result 0 "Docker Compose loads password from .env.docker"
+            else
+                print_result 1 "Docker Compose does NOT load password from .env.docker"
+            fi
+        fi
     fi
 fi
 
@@ -155,52 +177,57 @@ echo ""
 echo "6. Testing pre-commit hook..."
 echo "----------------------------------------"
 
-# Create a test file with a secret
-echo "password=test123" > .test-secret.txt
-git add .test-secret.txt 2>/dev/null
+# The hook reads `git diff --cached`, so exercising it requires staging a file —
+# but NOT committing one. An earlier version of this script ran
+# `git commit --no-verify`, which actually committed, leaving a junk commit
+# containing a fake secret on whatever branch you happened to be on. Stage, invoke
+# the hook directly, then unstage.
 
-# Try to commit (should fail)
-if git commit -m "test secret detection" --no-verify >/dev/null 2>&1; then
-    # Committed with --no-verify, that's expected
-    git reset HEAD .test-secret.txt 2>/dev/null
-    rm .test-secret.txt
-    print_warning "Pre-commit hook bypassed with --no-verify (this is OK for testing)"
-else
-    # Clean up
-    git reset HEAD .test-secret.txt 2>/dev/null
-    rm .test-secret.txt
-fi
+TEST_FILE=".security-check-tmp.txt"
 
-# Now test that the hook actually blocks commits
-echo "api_key=test123" > .test-secret.txt
-git add .test-secret.txt 2>/dev/null
+cleanup_hook_test() {
+    git reset -q HEAD -- "$TEST_FILE" 2>/dev/null || true
+    rm -f "$TEST_FILE"
+}
+# Ensure cleanup even if the script is interrupted mid-test.
+trap cleanup_hook_test EXIT INT TERM
 
-if timeout 5 git commit -m "test" 2>&1 | grep -q "Possible secret detected"; then
+echo "api_key=test123" > "$TEST_FILE"
+git add "$TEST_FILE" 2>/dev/null
+
+if bash .githooks/pre-commit 2>&1 | grep -q "Possible secret detected"; then
     print_result 0 "Pre-commit hook successfully blocks secrets"
-    git reset HEAD .test-secret.txt 2>/dev/null
-    rm .test-secret.txt
 else
     print_result 1 "Pre-commit hook does NOT block secrets"
-    git reset HEAD .test-secret.txt 2>/dev/null
-    rm .test-secret.txt
 fi
+
+cleanup_hook_test
+trap - EXIT INT TERM
 
 echo ""
 echo "7. Checking documentation..."
 echo "----------------------------------------"
 
-# Check if SECURITY.md exists
-if [ -f SECURITY.md ]; then
-    print_result 0 "SECURITY.md exists"
+# Docs live in docs/ with lowercase names; these checks previously looked for
+# SECURITY.md and DEPLOYMENT.md at the repo root and so never actually ran.
+if [ -f docs/security.md ]; then
+    print_result 0 "docs/security.md exists"
 else
-    print_result 1 "SECURITY.md does NOT exist"
+    print_result 1 "docs/security.md does NOT exist"
 fi
 
-# Check if documentation uses placeholders
-if grep -q "<production-app>" DEPLOYMENT.md 2>/dev/null; then
-    print_result 0 "DEPLOYMENT.md uses placeholders for URLs"
+# Deployment docs must use placeholders rather than real hostnames — this repo is
+# public. See docs/security.md.
+if grep -qE "<[a-z-]*app[a-z-]*>|<store-[a-z]+>" docs/deployment.md 2>/dev/null; then
+    print_result 0 "docs/deployment.md uses placeholders for URLs"
 else
-    print_result 1 "DEPLOYMENT.md does NOT use placeholders"
+    print_result 1 "docs/deployment.md does NOT use placeholders"
+fi
+
+if grep -qE "<[a-z-]*app[a-z-]*>|<store-[a-z]+>" docs/customer-onboarding.md 2>/dev/null; then
+    print_result 0 "docs/customer-onboarding.md uses placeholders for URLs"
+else
+    print_result 1 "docs/customer-onboarding.md does NOT use placeholders"
 fi
 
 echo ""
