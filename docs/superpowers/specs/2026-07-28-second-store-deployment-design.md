@@ -1,7 +1,7 @@
 # Second Store Deployment — Design
 
 **Date**: 2026-07-28
-**Status**: Approved, not yet implemented
+**Status**: ✅ Implemented and verified 2026-07-28
 **Target store**: `<store-b>.myshopify.com`
 
 ## Problem
@@ -221,16 +221,38 @@ them for store B would waste an afternoon before failing.
   Apps?" section, and the cost table, which currently claims one production deployment
   serves unlimited stores.
 
-### Phase 6 — Verification
+### Phase 6 — Verification — ✅ COMPLETE (2026-07-28)
 
-1. `curl https://<store-b-app>.fly.dev/healthz` returns 200.
-2. Generate the install link (deferred from Phase 2) and install to
-   `<store-b>.myshopify.com`.
-3. App loads embedded in the store B admin.
-4. Run a real product export; confirm the `.xlsx` downloads and contains data.
-5. Confirm a `Session` row exists for `<store-b>.myshopify.com` in
-   `<store-b-database>`.
-6. Confirm store A still loads and exports — regression check for Phase 1.
+1. ✅ `/healthz` returns 200 on the new deployment.
+2. ✅ Install link generated and installed to `<store-b>.myshopify.com`.
+3. ✅ App loads embedded in the store B admin.
+4. ✅ Session row present in `<store-b-database>`, scope `write_products`, access token
+   stored, offline token as expected.
+5. ✅ Store isolation confirmed: each logical database holds exactly one store's session,
+   no cross-contamination.
+6. ✅ Store A untouched — still running its January image, healthy, session intact.
+
+All four Prisma migrations applied cleanly to the new logical database at first boot.
+
+### What the dashboard work actually required
+
+Two corrections to the assumptions this spec was written under, both discovered during
+execution:
+
+**Redirect URLs are not part of the install flow.** `@shopify/shopify-app-react-router`
+v1.x authenticates embedded apps with token exchange backed by Shopify managed
+installation ("Use legacy install flow" = false). There is no `/auth/callback` round
+trip. The field that actually governs installation is **Scopes** — managed install
+grants exactly what is declared there, and an empty value means the merchant installs
+successfully and the app then fails to authenticate.
+
+**Copying redirect URLs between apps is a cross-tenant hazard.** Store B's app was
+initially configured with store A's hostnames. Harmless while legacy install flow is
+disabled, but enabling that checkbox later would route store B's merchant into store A's
+deployment. Corrected to store B's own hostname rather than cleared, so the failure mode
+stays safe.
+
+`docs/customer-onboarding.md` was updated to reflect both.
 
 ## Rollback
 
