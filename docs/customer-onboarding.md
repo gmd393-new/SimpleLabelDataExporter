@@ -135,6 +135,35 @@ If you ever tick **Use legacy install flow**, redirect URLs become mandatory:
 barcodes back to variants. It must match the `SCOPES` secret set in Step 6 — a mismatch
 causes a re-authorization loop rather than a clear error.
 
+### Webhook subscriptions
+
+The codebase ships handlers at `app/routes/webhooks.app.uninstalled.jsx` and
+`webhooks.app.scopes_update.jsx`, but **nothing registers them automatically**.
+`app/shopify.server.js` exports `registerWebhooks` without ever calling it, and there is
+no `afterAuth` hook. Subscriptions therefore have to be declared on the Partners app, or
+the handlers never fire.
+
+Add both under the app's webhook configuration:
+
+| Topic | URL |
+|---|---|
+| `app/uninstalled` | `https://<store-app>.fly.dev/webhooks/app/uninstalled` |
+| `app/scopes_update` | `https://<store-app>.fly.dev/webhooks/app/scopes_update` |
+
+Without `app/uninstalled`, uninstalling leaves the store's `Session` row behind with a
+dead token. Not dangerous — the row is inert and a reinstall overwrites it — but the
+database slowly accumulates rows for stores that are no longer customers, and the
+"is this store still active?" question stops having a reliable answer.
+
+To check whether a store's subscriptions are actually registered, query with that
+store's own token:
+
+```
+{ webhookSubscriptions(first: 20) { edges { node { topic } } } }
+```
+
+An empty `edges` array means none are registered.
+
 ### Credentials
 
 Copy the **client ID** and **API secret key** from the API credentials page; you need
@@ -320,6 +349,15 @@ The store is authorized for `read_products` rather than `write_products`. Follow
 
 Confirm the store actually has products, clear the search box, and check the
 Active/Draft status filter.
+
+### Stored access token returns 401
+
+Expected, not a fault. `app/shopify.server.js` enables
+`future.expiringOfflineAccessTokens`, so the offline token in the `Session` row expires
+and is refreshed by token exchange the next time the merchant opens the app. A stored
+token that has gone stale between visits is normal — it does not mean the store has lost
+access. It does mean you cannot use a stored token to make Admin API calls on a store
+that has been idle.
 
 ### One store works, another is broken after a release
 
