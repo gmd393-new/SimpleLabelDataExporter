@@ -122,12 +122,15 @@ flyctl secrets set \
   SHOPIFY_APP_URL=https://<production-app>.fly.dev \
   SHOPIFY_API_KEY=<client ID from that store's Partners app> \
   SHOPIFY_API_SECRET=<API secret from that store's Partners app> \
+  UPC_PREFIX=<this store's own vendor prefix, distinct from every other store> \
   --app <production-app>
 ```
 
-**All five are required.** `app/shopify.server.js:11-15` reads `SHOPIFY_API_KEY`,
+**All six are required.** `app/shopify.server.js:11-15` reads `SHOPIFY_API_KEY`,
 `SHOPIFY_API_SECRET`, `SCOPES`, and `SHOPIFY_APP_URL`; `DATABASE_URL` is set by
-`postgres attach`.
+`postgres attach`. `UPC_PREFIX` has no default — `getUpcPrefix()` throws if it is
+missing — because two stores sharing a prefix would issue duplicate UPCs from their
+separate databases.
 
 `SHOPIFY_APP_URL` is per-deployment. Copying it from another store's deployment sends
 OAuth redirects to the wrong app and presents as a redirect loop rather than a clear
@@ -340,6 +343,7 @@ flyctl secrets set \
   SHOPIFY_APP_URL=https://<store-app>.fly.dev \
   SHOPIFY_API_KEY=<that store's client ID> \
   SHOPIFY_API_SECRET=<that store's API secret> \
+  UPC_PREFIX=<that store's own vendor prefix, distinct from every other store> \
   --app <store-app>
 ```
 
