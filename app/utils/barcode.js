@@ -10,15 +10,29 @@ import db from "../db.server.js";
 import { CHECK_BARCODE_EXISTS_QUERY } from "../graphql/products.js";
 import { buildUpc } from "./upc.js";
 
-/** Lead digit 0 + vendor code 65240 (Centralia). Self-assigned, not GS1-licensed. */
-export const DEFAULT_UPC_PREFIX = "065240";
-
 /**
  * The vendor prefix for this deployment.
+ *
+ * There is no default. Each store runs against its own database, and the item
+ * code sequence in that database restarts at 1 independently of every other
+ * store. The prefix is the ONLY thing that keeps two stores' UPCs from
+ * colliding, so a shared or missing prefix means two stores will eventually
+ * mint the identical code. Every deployment must set its own `UPC_PREFIX`.
+ *
  * @returns {string}
+ * @throws {Error} if UPC_PREFIX is unset or empty
  */
 export function getUpcPrefix() {
-  return process.env.UPC_PREFIX || DEFAULT_UPC_PREFIX;
+  const prefix = process.env.UPC_PREFIX;
+  if (!prefix) {
+    throw new Error(
+      "UPC_PREFIX is not set. Each store needs its own distinct UPC_PREFIX — " +
+        "there is no shared default, because two stores sharing a prefix would " +
+        "issue duplicate UPCs (each store allocates from its own database). " +
+        "Set UPC_PREFIX in this store's environment before generating barcodes."
+    );
+  }
+  return prefix;
 }
 
 /**

@@ -112,6 +112,13 @@ if [[ "${VALUES[SHOPIFY_APP_URL]}" == */ ]]; then
     exit 1
 fi
 
+# A UPC_PREFIX that isn't a plain digit string can silently produce malformed
+# UPCs or collide with another store in unexpected ways. Require 1-10 digits.
+if [[ ! "${VALUES[UPC_PREFIX]}" =~ ^[0-9]{1,10}$ ]]; then
+    echo -e "${RED}✗${NC} UPC_PREFIX must be 1-10 digits (got: '${VALUES[UPC_PREFIX]}')"
+    exit 1
+fi
+
 if ! command -v flyctl >/dev/null 2>&1; then
     echo -e "${RED}✗${NC} flyctl not found on PATH"
     exit 1

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { allocateUpc, getUpcPrefix, DEFAULT_UPC_PREFIX } from "../../app/utils/barcode.js";
+import { allocateUpc, getUpcPrefix } from "../../app/utils/barcode.js";
 
 /**
  * Minimal in-memory stand-in for db.upcAllocation.
@@ -144,11 +144,14 @@ test("exhausting the item code space throws rather than wrapping", async () => {
   );
 });
 
-test("getUpcPrefix falls back to the default when UPC_PREFIX is unset", () => {
+test("getUpcPrefix throws when UPC_PREFIX is unset or empty", () => {
   const original = process.env.UPC_PREFIX;
+
   delete process.env.UPC_PREFIX;
-  assert.equal(getUpcPrefix(), DEFAULT_UPC_PREFIX);
-  assert.equal(getUpcPrefix(), "065240");
+  assert.throws(() => getUpcPrefix(), /UPC_PREFIX is not set/);
+
+  process.env.UPC_PREFIX = "";
+  assert.throws(() => getUpcPrefix(), /UPC_PREFIX is not set/);
 
   process.env.UPC_PREFIX = "0652401";
   assert.equal(getUpcPrefix(), "0652401");
