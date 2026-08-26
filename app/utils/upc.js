@@ -43,3 +43,63 @@ export function isValidUpc(value) {
   }
   return calculateCheckDigit(value.slice(0, 11)) === value[11];
 }
+
+/**
+ * How many digits are available for the item code, given the vendor prefix.
+ *
+ * A UPC-A is 12 digits: prefix + item code + 1 check digit. Deriving the width
+ * rather than configuring it means swapping in a real GS1 prefix of a different
+ * length needs no code change.
+ *
+ * @param {string} prefix - Lead digit plus vendor code, e.g. "065240"
+ * @returns {number}
+ */
+export function getItemCodeWidth(prefix) {
+  if (typeof prefix !== "string" || !/^\d{1,10}$/.test(prefix)) {
+    throw new Error(
+      `UPC prefix must be 1-10 digits, got: ${JSON.stringify(prefix)}`
+    );
+  }
+  return 11 - prefix.length;
+}
+
+/**
+ * Build a complete 12-digit UPC-A from a vendor prefix and an item code.
+ *
+ * @param {string} prefix - Lead digit plus vendor code, e.g. "065240"
+ * @param {number} itemCode - Non-negative integer within the derived capacity
+ * @returns {string} A 12-digit UPC
+ */
+export function buildUpc(prefix, itemCode) {
+  const width = getItemCodeWidth(prefix);
+  const capacity = 10 ** width;
+
+  if (!Number.isInteger(itemCode) || itemCode < 0) {
+    throw new Error(
+      `Item code must be a non-negative integer, got: ${JSON.stringify(itemCode)}`
+    );
+  }
+  if (itemCode >= capacity) {
+    throw new Error(
+      `Item code ${itemCode} exceeds capacity for prefix ${prefix} ` +
+        `(max ${capacity - 1}). A shorter prefix is needed for more codes.`
+    );
+  }
+
+  const first11 = prefix + String(itemCode).padStart(width, "0");
+  return first11 + calculateCheckDigit(first11);
+}
+
+/**
+ * Whether a barcode is a valid UPC issued under our own vendor prefix.
+ *
+ * Stricter than isValidUpc on purpose: a genuine UPC carrying someone else's
+ * prefix is not ours, and should still be offered for replacement.
+ *
+ * @param {unknown} value
+ * @param {string} prefix
+ * @returns {boolean}
+ */
+export function isOurUpc(value, prefix) {
+  return isValidUpc(value) && value.startsWith(prefix);
+}
