@@ -291,6 +291,72 @@ deploying it does not touch any current barcode.
 | Replace breaks already-printed tags | Never automatic — explicit action, confirmation dialog showing old → new, and a warning |
 | A failed Shopify mutation burns an item code | Accepted deliberately; burning is safe under a once-only rule, reissuing is not |
 
+## Known follow-ups (accepted at merge, 2026-08-25)
+
+The branch was merged with these open. They were found by the final whole-branch review
+and its scoped re-review, verified real, and deliberately deferred.
+
+### ⚠️ Deploy prerequisite — do this before shipping
+
+**Set `UPC_PREFIX` on every deployed store's Fly secrets before deploying this code.**
+`getUpcPrefix()` now throws instead of defaulting, and it is called in the *loader*
+(`app/routes/app._index.jsx:114`), which has no `ErrorBoundary`. A store missing the
+secret will therefore return HTTP 500 on **every page load** — product list and Excel
+export included, not just barcode generation.
+
+Store A uses `065240`. Store B must use a **different** prefix (`065241` is set in the
+local `.env-thegoatstock`, not yet applied to Fly). Two stores sharing a prefix would
+mint identical UPCs, because each store allocates from its own database.
+
+```bash
+bash scripts/set-store-secrets.sh .env-<store-slug>   # includes UPC_PREFIX
+```
+
+### 1. The loader should degrade rather than throw
+
+Make the loader catch the missing-prefix error and return `upcPrefix: null`, disabling
+the barcode controls behind a banner while leaving search and export working. The action
+should keep throwing, so allocation still fails loudly. Requires making `isOurUpc` null-safe
+at its three call sites. This makes the blast radius match the fault.
+
+### 2. The overwrite guard fails open on a GraphQL error
+
+`app/routes/app._index.jsx:157` reads `variantData.data?.productVariant?.barcode || ""`
+without checking `variantData.errors` or a null `productVariant`. A throttled or failed
+Admin API call that still returns HTTP 200 collapses to `liveBarcode = ""`, which *passes*
+the generate guard and overwrites a real barcode with no confirmation — the exact harm the
+live-barcode check was added to prevent. Two-line fix: abort with an error if
+`variantData.errors?.length` or `variantData.data?.productVariant == null`.
+
+### 3. Stale documentation
+
+`docs/customer-onboarding.md:216` still describes `UPC_PREFIX` as having a "default
+`065240`". There is no default any more — it throws. The line at `:375` referring to "the
+default 6-digit prefix" is similarly loose.
+
+### 4. Test-fidelity gaps in the allocator suite
+
+Deferred by explicit decision; the final review independently confirmed none can cause a
+duplicate UPC. The fake Prisma client in `tests/utils/barcode.test.js`:
+
+- throws `P2002` without inserting the winner's row, so the race test asserts the retry
+  returns the *same* code (`065240000012`) where real Postgres would give the *next* one
+  (`065240000029`) — a trap for anyone who later makes the fake faithful
+- `findFirst()` ignores its `orderBy`, so flipping `desc`→`asc` in the allocator leaves the
+  suite green (that regression fails loudly at runtime rather than reusing a code)
+- `create` assertions omit `shop`, `productId`, and `variantId`
+- only the `itemCode` constraint is enforced, not `upc`
+- the `offset = 1` reset after a `P2002` has no effective coverage
+
+Also: no test vector produces a check digit of `0`, a branch the 5th UPC ever issued will
+exercise. And there is no CI — `npm test` is a manual local gate.
+
+### 5. Operational: never restore `UpcAllocation` to an older snapshot
+
+Rolling the table back below its high-water mark while Shopify retains the newer barcodes
+would let a code belonging to a since-deleted product be reissued — precisely the hole the
+ledger exists to close.
+
 ## Out of scope
 
 - Bulk conversion of the existing catalog to UPCs. Printed tags make this a per-item
