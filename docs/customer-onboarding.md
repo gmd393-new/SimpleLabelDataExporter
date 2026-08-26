@@ -209,9 +209,29 @@ become tracked. Add `--dry-run` to see what it would set without changing anythi
 git check-ignore .env-<store-slug>    # must print the filename
 ```
 
-All five secrets are required — `app/shopify.server.js` reads `SHOPIFY_API_KEY`,
+All six secrets are required — `app/shopify.server.js` reads `SHOPIFY_API_KEY`,
 `SHOPIFY_API_SECRET`, `SCOPES`, and `SHOPIFY_APP_URL`, and `DATABASE_URL` comes from
 Step 5.
+
+`UPC_PREFIX` sets the lead digit and vendor code for generated UPCs (default
+`065240` — lead digit `0` plus the Centralia zip as the vendor code). It is not a
+credential. Two stores that both generate UPCs must be given **different** prefixes,
+because the item code sequence lives in each store's own database and would
+otherwise hand out the same codes twice.
+
+**Changing `UPC_PREFIX` length after codes have been issued is not supported.**
+Because the item code is zero-padded to a derived width, a shorter prefix can
+generate a UPC string that collides with an already-issued one without colliding
+on the item code. The allocator fails safe (it never reuses a code) but reports a
+misleading "please try again" error for what is actually a permanent condition.
+Moving to a different prefix is a fresh start, not a migration.
+
+The item-code sequence is also global to a database, not per-store: the allocator
+takes the highest `itemCode` in the whole `UpcAllocation` table with no `shop`
+filter. Two stores sharing one database interleave a single code space. That is
+safe — `itemCode` is globally unique so a collision is impossible — but it means
+the codes a store issues will have gaps. Two stores that each need their own
+contiguous sequence need different prefixes, which is already the guidance above.
 
 **`SHOPIFY_APP_URL` is the one that bites.** If it is missing, or copied from another
 store's deployment, OAuth redirects land on the wrong deployment and present as a
@@ -271,9 +291,14 @@ hostname that isn't up fails in a way that is hard to diagnose from the merchant
 ## Customer handoff
 
 1. **Access**: Shopify Admin → **Apps** → the app's name.
-2. **Usage**: search by name, SKU, barcode, or vendor; select products; optionally click
-   **Generate** for variants missing barcodes; click **Export Selected to Excel**; open
-   the file in Excel or label-printing software.
+2. **Usage**: search by name, SKU, barcode, or vendor; select products; click
+   **Generate** for variants missing barcodes; click **Export Selected to Excel**;
+   open the file in Excel or label-printing software.
+
+   Barcodes are 12-digit UPCs. A barcode marked **Legacy** predates the UPC
+   scheme and cannot ship to Paradies — use **Replace with UPC** on that row,
+   remembering that any shelf tag already printed with the old code will stop
+   scanning once it is replaced.
 3. **Support**: provide your contact address.
 
 ## Changing scopes for an existing store
@@ -344,6 +369,27 @@ flyctl logs --app <store-app>
 
 The store is authorized for `read_products` rather than `write_products`. Follow
 *Changing scopes for an existing store*.
+
+### "Unable to allocate a UPC" or "exceeds capacity"
+
+The item code space for the configured `UPC_PREFIX` is exhausted — with the default
+6-digit prefix that is 100,000 items. Check how many have been issued:
+
+```bash
+flyctl postgres connect --app <production-db>
+\c <store database>
+SELECT count(*), max("itemCode") FROM "UpcAllocation";
+```
+
+Both numbers are per **database**, not per store: `count(*)` counts every
+allocation regardless of which store issued it, and `max("itemCode")` — the
+sequence high-water mark that determines remaining capacity — is the same
+number across any stores sharing that database, since the allocator has no
+`shop` filter (see Step 6 above). If two stores share this database, this is
+their combined total, not this store's alone.
+
+Moving to a shorter prefix widens the item code space, but note that codes already
+issued under the old prefix stay in the ledger and remain valid on printed labels.
 
 ### Products not showing
 

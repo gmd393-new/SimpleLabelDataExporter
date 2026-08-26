@@ -1,36 +1,57 @@
 /**
- * Barcode generation utilities for product variants
+ * UPC allocation for product variants.
+ *
+ * Codes are issued sequentially and recorded permanently in the UpcAllocation
+ * table. The table's unique constraints — not any application-level lock — are
+ * what guarantee a code is never issued twice.
  */
 
-import { CHECK_BARCODE_EXISTS_QUERY } from "../graphql/products";
+import db from "../db.server.js";
+import { CHECK_BARCODE_EXISTS_QUERY } from "../graphql/products.js";
+import { buildUpc } from "./upc.js";
 
 /**
- * Generate a random 8-digit barcode
- * Range: 10000000 to 99999999
+ * The vendor prefix for this deployment.
+ *
+ * There is no default. Each store runs against its own database, and the item
+ * code sequence in that database restarts at 1 independently of every other
+ * store. The prefix is the ONLY thing that keeps two stores' UPCs from
+ * colliding, so a shared or missing prefix means two stores will eventually
+ * mint the identical code. Every deployment must set its own `UPC_PREFIX`.
+ *
+ * @returns {string}
+ * @throws {Error} if UPC_PREFIX is unset or empty
  */
-export function generateRandomBarcode() {
-  const min = 10000000;
-  const max = 99999999;
-  return Math.floor(Math.random() * (max - min + 1)) + min;
+export function getUpcPrefix() {
+  const prefix = process.env.UPC_PREFIX;
+  if (!prefix) {
+    throw new Error(
+      "UPC_PREFIX is not set. Each store needs its own distinct UPC_PREFIX — " +
+        "there is no shared default, because two stores sharing a prefix would " +
+        "issue duplicate UPCs (each store allocates from its own database). " +
+        "Set UPC_PREFIX in this store's environment before generating barcodes."
+    );
+  }
+  return prefix;
 }
 
 /**
- * Check if a barcode already exists in the Shopify store
+ * Check whether any product in the store already carries this barcode.
+ *
+ * A safety net for barcodes typed in by hand that the ledger has never seen.
+ * It is not the uniqueness guarantee — the ledger is.
+ *
  * @param {Object} admin - Shopify admin GraphQL client
- * @param {string} barcode - The barcode to check
- * @returns {Promise<boolean>} - true if barcode exists, false otherwise
+ * @param {string} barcode
+ * @returns {Promise<boolean>}
  */
 export async function checkBarcodeExists(admin, barcode) {
   try {
     const response = await admin.graphql(CHECK_BARCODE_EXISTS_QUERY, {
-      variables: {
-        query: `barcode:${barcode}`,
-      },
+      variables: { query: `barcode:${barcode}` },
     });
 
     const data = await response.json();
-
-    // Check if any products were found with this barcode
     return data.data.products.edges.length > 0;
   } catch (error) {
     console.error("Error checking barcode existence:", error);
@@ -39,27 +60,84 @@ export async function checkBarcodeExists(admin, barcode) {
 }
 
 /**
- * Generate a unique barcode that doesn't exist in the store
- * @param {Object} admin - Shopify admin GraphQL client
- * @param {number} maxAttempts - Maximum number of generation attempts
- * @returns {Promise<string>} - A unique 8-digit barcode
- * @throws {Error} - If unable to generate unique barcode after maxAttempts
+ * Reserve the next available UPC and record it permanently.
+ *
+ * The ledger row is written BEFORE the caller updates Shopify. If that update
+ * then fails the item code is burned and never reused, which is the correct
+ * trade under a once-only rule: burning one code out of 100,000 is harmless,
+ * reissuing one is not.
+ *
+ * @param {Object} params
+ * @param {Object} params.dbClient - Prisma client (injected so this is testable)
+ * @param {string} params.prefix - Vendor prefix
+ * @param {Object} params.allocation - { shop, productId, variantId, replacedBarcode? }
+ * @param {(upc: string) => Promise<boolean>} params.barcodeExists
+ * @param {number} [params.maxAttempts=10]
+ * @returns {Promise<string>} The allocated 12-digit UPC
  */
-export async function generateUniqueBarcode(admin, maxAttempts = 10) {
+export async function allocateUpc({
+  dbClient,
+  prefix,
+  allocation,
+  barcodeExists,
+  maxAttempts = 10,
+}) {
+  const { shop, productId, variantId, replacedBarcode = null } = allocation;
+
+  // Bumped when a candidate turns out to be in use in Shopify but absent from
+  // the ledger; without it we would recompute the same code forever.
+  let offset = 1;
+
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const barcode = generateRandomBarcode().toString();
+    const highest = await dbClient.upcAllocation.findFirst({
+      orderBy: { itemCode: "desc" },
+      select: { itemCode: true },
+    });
 
-    const exists = await checkBarcodeExists(admin, barcode);
+    const itemCode = (highest?.itemCode ?? 0) + offset;
 
-    if (!exists) {
-      return barcode;
+    // Throws on capacity exhaustion — deliberately not caught, so running out
+    // surfaces as a clear error instead of a silent wrap.
+    const upc = buildUpc(prefix, itemCode);
+
+    if (await barcodeExists(upc)) {
+      offset += 1;
+      continue;
     }
 
-    // Log collision (rare, but good for debugging)
-    console.log(`Barcode collision detected: ${barcode} (attempt ${attempt + 1}/${maxAttempts})`);
+    try {
+      await dbClient.upcAllocation.create({
+        data: { upc, itemCode, shop, productId, variantId, replacedBarcode },
+      });
+      return upc;
+    } catch (error) {
+      if (error.code === "P2002") {
+        // Another request took this code between our read and our write.
+        // Re-read from the new high-water mark.
+        offset = 1;
+        continue;
+      }
+      throw error;
+    }
   }
 
   throw new Error(
-    `Unable to generate unique barcode after ${maxAttempts} attempts. Please try again or contact support.`
+    `Unable to allocate a UPC after ${maxAttempts} attempts. Please try again.`
   );
+}
+
+/**
+ * Allocate a UPC for a variant, wired to the real database and Shopify.
+ *
+ * @param {Object} admin - Shopify admin GraphQL client
+ * @param {Object} allocation - { shop, productId, variantId, replacedBarcode? }
+ * @returns {Promise<string>} The allocated 12-digit UPC
+ */
+export async function generateUniqueUpc(admin, allocation) {
+  return allocateUpc({
+    dbClient: db,
+    prefix: getUpcPrefix(),
+    allocation,
+    barcodeExists: (upc) => checkBarcodeExists(admin, upc),
+  });
 }

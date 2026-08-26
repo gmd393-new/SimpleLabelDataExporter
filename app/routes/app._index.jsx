@@ -2,10 +2,16 @@ import { useLoaderData, useSubmit, useFetcher } from "react-router";
 import { useState, useEffect, useRef } from "react";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
-import { PRODUCTS_QUERY, UPDATE_VARIANT_BARCODE_MUTATION } from "../graphql/products";
+import {
+  PRODUCTS_QUERY,
+  UPDATE_VARIANT_BARCODE_MUTATION,
+  GET_VARIANT_BARCODE_QUERY,
+} from "../graphql/products";
 import crypto from "crypto";
 import db from "../db.server";
-import { generateUniqueBarcode } from "../utils/barcode";
+import { generateUniqueUpc, getUpcPrefix } from "../utils/barcode";
+import { isOurUpc } from "../utils/upc";
+import { barcodeActionStyle, LegacyBadge } from "../components/barcodeCell";
 
 /**
  * Loader: Fetches products and variants from Shopify Admin API
@@ -105,15 +111,17 @@ export async function loader({ request }) {
     hasNextPage: data.data.products.pageInfo.hasNextPage,
     searchQuery,
     statusFilter: validStatuses.map(s => s.toLowerCase()).join(','),
+    upcPrefix: getUpcPrefix(),
   };
 }
 
 /**
- * Action: Handles both export and barcode generation actions
+ * Action: Handles export, barcode generation, and barcode replacement
  *
  * Actions:
  * 1. "export" - Creates a one-time download token for mobile-compatible file exports
- * 2. "generateBarcode" - Generates and updates a unique barcode for a variant
+ * 2. "generateBarcode" - Allocates a UPC for a variant that has no barcode
+ * 3. "replaceBarcode" - Allocates a UPC to overwrite a non-UPC barcode, on request
  */
 export async function action({ request }) {
   const { session, admin } = await authenticate.admin(request);
@@ -121,35 +129,74 @@ export async function action({ request }) {
   const formData = await request.formData();
   const actionType = formData.get("actionType");
 
-  // Handle barcode generation
-  if (actionType === "generateBarcode") {
+  // Handle barcode generation and replacement.
+  //
+  // These share an implementation but differ in one important way: generate only
+  // ever fills an empty barcode, while replace deliberately overwrites an existing
+  // one. Replace is separate precisely so that overwriting is never implicit —
+  // shelf tags carrying the old code are already printed and will stop scanning.
+  if (actionType === "generateBarcode" || actionType === "replaceBarcode") {
     const variantId = formData.get("variantId");
     const productId = formData.get("productId");
+    // Informational only — a stale tab, another user, or a CSV import could
+    // have changed the variant since this page loaded. The overwrite guard
+    // below must never be decided from client-supplied data; it always asks
+    // Shopify for the live value instead.
+    const clientBarcode = formData.get("currentBarcode") || "";
 
     if (!variantId || !productId) {
       return { error: "No variant ID or product ID provided" };
     }
 
-    try {
-      // Generate a unique barcode
-      const newBarcode = await generateUniqueBarcode(admin);
+    const prefix = getUpcPrefix();
 
-      // Update the variant in Shopify using bulk update mutation
+    const variantResponse = await admin.graphql(GET_VARIANT_BARCODE_QUERY, {
+      variables: { id: variantId },
+    });
+    const variantData = await variantResponse.json();
+    const liveBarcode = variantData.data?.productVariant?.barcode || "";
+
+    if (liveBarcode !== clientBarcode) {
+      console.warn(
+        `Stale barcode for variant ${variantId}: client had ${JSON.stringify(clientBarcode)}, Shopify has ${JSON.stringify(liveBarcode)}`
+      );
+    }
+
+    if (actionType === "generateBarcode" && liveBarcode) {
+      return {
+        error:
+          "This variant already has a barcode. Reload the page and use Replace with UPC instead.",
+      };
+    }
+
+    if (actionType === "replaceBarcode") {
+      if (isOurUpc(liveBarcode, prefix)) {
+        return { error: "This variant already has a current UPC." };
+      }
+      if (!liveBarcode) {
+        return {
+          error: "This variant has no barcode to replace. Reload the page and use Generate instead.",
+        };
+      }
+    }
+
+    try {
+      const newBarcode = await generateUniqueUpc(admin, {
+        shop: session.shop,
+        productId,
+        variantId,
+        replacedBarcode: actionType === "replaceBarcode" ? liveBarcode : null,
+      });
+
       const response = await admin.graphql(UPDATE_VARIANT_BARCODE_MUTATION, {
         variables: {
           productId: productId,
-          variants: [
-            {
-              id: variantId,
-              barcode: newBarcode,
-            },
-          ],
+          variants: [{ id: variantId, barcode: newBarcode }],
         },
       });
 
       const data = await response.json();
 
-      // Check for errors
       if (data.data.productVariantsBulkUpdate.userErrors.length > 0) {
         const errorMessages = data.data.productVariantsBulkUpdate.userErrors
           .map((e) => e.message)
@@ -157,15 +204,14 @@ export async function action({ request }) {
         return { error: `Failed to update barcode: ${errorMessages}` };
       }
 
-      // Return success with new barcode
       return {
         success: true,
-        actionType: "generateBarcode",
+        actionType,
         variantId,
         barcode: newBarcode,
       };
     } catch (error) {
-      console.error("Barcode generation error:", error);
+      console.error("UPC generation error:", error);
       return { error: error.message || "Failed to generate barcode" };
     }
   }
@@ -209,7 +255,7 @@ export async function action({ request }) {
  * Component: Product selection table with export functionality
  */
 export default function ExportPage() {
-  const { variants: initialVariants, searchQuery, statusFilter } = useLoaderData();
+  const { variants: initialVariants, searchQuery, statusFilter, upcPrefix } = useLoaderData();
   const shopify = useAppBridge();
   const submit = useSubmit();
   const fetcher = useFetcher();
@@ -223,6 +269,7 @@ export default function ExportPage() {
   const [labelQuantities, setLabelQuantities] = useState({});
   const [variants, setVariants] = useState(initialVariants);
   const [generatingBarcodeFor, setGeneratingBarcodeFor] = useState(null);
+  const [confirmingReplaceFor, setConfirmingReplaceFor] = useState(null);
   const [isDesktop, setIsDesktop] = useState(false);
   const downloadInitiatedRef = useRef(null);
 
@@ -377,23 +424,30 @@ export default function ExportPage() {
     return () => mediaQuery.removeEventListener('change', handler);
   }, []);
 
-  // Handle barcode generation response
+  // Handle barcode generation / replacement response
   useEffect(() => {
-    if (barcodeFetcher.data && barcodeFetcher.data.success && barcodeFetcher.data.actionType === "generateBarcode") {
-      const { variantId, barcode } = barcodeFetcher.data;
+    const result = barcodeFetcher.data;
+    const isBarcodeAction =
+      result?.actionType === "generateBarcode" || result?.actionType === "replaceBarcode";
 
-      // Update the variant in local state
+    if (result && result.success && isBarcodeAction) {
+      const { variantId, barcode, actionType } = result;
+
       setVariants((prevVariants) =>
-        prevVariants.map((v) =>
-          v.id === variantId ? { ...v, barcode } : v
-        )
+        prevVariants.map((v) => (v.id === variantId ? { ...v, barcode } : v))
       );
 
       setGeneratingBarcodeFor(null);
-      shopify.toast.show(`Barcode generated: ${barcode}`);
-    } else if (barcodeFetcher.data && barcodeFetcher.data.error) {
+      setConfirmingReplaceFor(null);
+      shopify.toast.show(
+        actionType === "replaceBarcode"
+          ? `Barcode replaced with UPC: ${barcode}`
+          : `UPC generated: ${barcode}`
+      );
+    } else if (result && result.error) {
       setGeneratingBarcodeFor(null);
-      shopify.toast.show(barcodeFetcher.data.error, { isError: true });
+      setConfirmingReplaceFor(null);
+      shopify.toast.show(result.error, { isError: true });
     }
   }, [barcodeFetcher.data, shopify]);
 
@@ -445,6 +499,18 @@ export default function ExportPage() {
     formData.append("actionType", "generateBarcode");
     formData.append("variantId", variantId);
     formData.append("productId", productId);
+    barcodeFetcher.submit(formData, { method: "post" });
+  };
+
+  const handleReplaceBarcode = (variantId, productId, currentBarcode) => {
+    setGeneratingBarcodeFor(variantId);
+    setConfirmingReplaceFor(null);
+
+    const formData = new FormData();
+    formData.append("actionType", "replaceBarcode");
+    formData.append("variantId", variantId);
+    formData.append("productId", productId);
+    formData.append("currentBarcode", currentBarcode);
     barcodeFetcher.submit(formData, { method: "post" });
   };
 
@@ -1019,9 +1085,14 @@ export default function ExportPage() {
                   <div className="card-metadata-item" style={{ flex: "1 1 100%", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
                       <span className="card-metadata-label">Barcode:</span>
-                      <span style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+                      <span style={{ display: "flex", alignItems: "center", gap: "4px", flexWrap: "wrap" }}>
                         {variant.barcode ? (
-                          variant.barcode
+                          <>
+                            <span style={{ fontVariantNumeric: "tabular-nums" }}>
+                              {variant.barcode}
+                            </span>
+                            {!isOurUpc(variant.barcode, upcPrefix) && <LegacyBadge />}
+                          </>
                         ) : (
                           <>
                             <span style={{ fontSize: "14px", color: "#bf0711" }}>🚫</span>
@@ -1034,20 +1105,44 @@ export default function ExportPage() {
                       <button
                         onClick={() => handleGenerateBarcode(variant.id, variant.productId)}
                         disabled={generatingBarcodeFor === variant.id}
-                        style={{
-                          padding: "6px 12px",
-                          fontSize: "13px",
-                          fontWeight: "600",
-                          color: generatingBarcodeFor === variant.id ? "#6d7175" : "#008060",
-                          background: generatingBarcodeFor === variant.id ? "#f6f6f7" : "#f1f8f5",
-                          border: `1px solid ${generatingBarcodeFor === variant.id ? "#c9cccf" : "#008060"}`,
-                          borderRadius: "6px",
-                          cursor: generatingBarcodeFor === variant.id ? "not-allowed" : "pointer",
-                          transition: "all 0.15s ease",
-                        }}
+                        style={barcodeActionStyle(generatingBarcodeFor === variant.id)}
                       >
                         {generatingBarcodeFor === variant.id ? "Generating..." : "Generate"}
                       </button>
+                    )}
+                    {variant.barcode && !isOurUpc(variant.barcode, upcPrefix) && (
+                      confirmingReplaceFor === variant.id ? (
+                        <div style={{ display: "flex", flexDirection: "column", gap: "6px", flex: "1 1 100%" }}>
+                          <span style={{ fontSize: "12px", color: "#8a6116" }}>
+                            Replace {variant.barcode}? Any tag already printed with it
+                            will stop scanning.
+                          </span>
+                          <div style={{ display: "flex", gap: "6px" }}>
+                          <button
+                            onClick={() =>
+                              handleReplaceBarcode(variant.id, variant.productId, variant.barcode)
+                            }
+                            style={barcodeActionStyle(false)}
+                          >
+                            Confirm
+                          </button>
+                          <button
+                            onClick={() => setConfirmingReplaceFor(null)}
+                            style={{ ...barcodeActionStyle(false), color: "#6d7175", background: "#fff", border: "1px solid #c9cccf" }}
+                          >
+                            Cancel
+                          </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => setConfirmingReplaceFor(variant.id)}
+                          disabled={generatingBarcodeFor === variant.id}
+                          style={barcodeActionStyle(generatingBarcodeFor === variant.id)}
+                        >
+                          {generatingBarcodeFor === variant.id ? "Replacing..." : "Replace"}
+                        </button>
+                      )
                     )}
                   </div>
                 </div>
@@ -1232,26 +1327,59 @@ export default function ExportPage() {
                         </td>
                         <td style={{ padding: "12px 8px" }}>{variant.sku}</td>
                         <td style={{ padding: "12px 8px" }}>
-                          {variant.barcode ? (
-                            variant.barcode
-                          ) : (
+                          {!variant.barcode ? (
                             <button
                               onClick={() => handleGenerateBarcode(variant.id, variant.productId)}
                               disabled={generatingBarcodeFor === variant.id}
-                              style={{
-                                padding: "6px 12px",
-                                fontSize: "13px",
-                                fontWeight: "600",
-                                color: generatingBarcodeFor === variant.id ? "#6d7175" : "#008060",
-                                background: generatingBarcodeFor === variant.id ? "#f6f6f7" : "#f1f8f5",
-                                border: `1px solid ${generatingBarcodeFor === variant.id ? "#c9cccf" : "#008060"}`,
-                                borderRadius: "6px",
-                                cursor: generatingBarcodeFor === variant.id ? "not-allowed" : "pointer",
-                                transition: "all 0.15s ease",
-                              }}
+                              style={barcodeActionStyle(generatingBarcodeFor === variant.id)}
                             >
                               {generatingBarcodeFor === variant.id ? "Generating..." : "Generate"}
                             </button>
+                          ) : isOurUpc(variant.barcode, upcPrefix) ? (
+                            <span style={{ fontVariantNumeric: "tabular-nums" }}>
+                              {variant.barcode}
+                            </span>
+                          ) : confirmingReplaceFor === variant.id ? (
+                            <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+                              <span style={{ fontSize: "12px", color: "#8a6116" }}>
+                                Replace {variant.barcode}? Any tag already printed with it
+                                will stop scanning.
+                              </span>
+                              <div style={{ display: "flex", gap: "6px" }}>
+                                <button
+                                  onClick={() =>
+                                    handleReplaceBarcode(
+                                      variant.id,
+                                      variant.productId,
+                                      variant.barcode
+                                    )
+                                  }
+                                  style={barcodeActionStyle(false)}
+                                >
+                                  Confirm
+                                </button>
+                                <button
+                                  onClick={() => setConfirmingReplaceFor(null)}
+                                  style={{ ...barcodeActionStyle(false), color: "#6d7175", background: "#fff", border: "1px solid #c9cccf" }}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+                              <span style={{ fontVariantNumeric: "tabular-nums" }}>
+                                {variant.barcode}
+                              </span>
+                              <LegacyBadge />
+                              <button
+                                onClick={() => setConfirmingReplaceFor(variant.id)}
+                                disabled={generatingBarcodeFor === variant.id}
+                                style={barcodeActionStyle(generatingBarcodeFor === variant.id)}
+                              >
+                                {generatingBarcodeFor === variant.id ? "Replacing..." : "Replace with UPC"}
+                              </button>
+                            </div>
                           )}
                         </td>
                         <td style={{ padding: "12px 8px" }}>

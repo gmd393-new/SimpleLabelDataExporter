@@ -42,7 +42,8 @@ npm run lint
 
 **GraphQL Queries & Mutations** (`app/graphql/products.js`)
 - `PRODUCTS_QUERY`: Fetches products with variants including barcode, SKU, price, and inventory data
-- `CHECK_BARCODE_EXISTS_QUERY`: Verifies if a barcode already exists in the store
+- `CHECK_BARCODE_EXISTS_QUERY`: A safety-net search for a barcode across the store, used to catch hand-typed codes the ledger has never seen
+- `GET_VARIANT_BARCODE_QUERY`: Fetches a single variant's current barcode directly from Shopify — the server's source of truth for the generate/replace overwrite guard
 - `UPDATE_VARIANT_BARCODE_MUTATION`: Updates a variant's barcode using productVariantsBulkUpdate
 - Supports search filtering via `$query` parameter
 - Search syntax: `title:*term* OR sku:*term* OR barcode:*term*`
@@ -55,7 +56,8 @@ npm run lint
   - Includes productId in variant data for barcode updates
 - **Actions**:
   - `export`: Creates one-time download token for Excel file export
-  - `generateBarcode`: Generates unique 8-digit barcode and updates variant in Shopify
+  - `generateBarcode`: Allocates a 12-digit UPC-A for a variant with no barcode
+  - `replaceBarcode`: Allocates a UPC to explicitly overwrite a non-UPC (legacy) barcode
 - **Component**:
   - Live search input with 500ms debouncing
   - Product table with multi-select checkboxes
@@ -81,27 +83,54 @@ Each row in the export table represents a **ProductVariant** (not a Product). Th
 
 ### Barcode Generation
 
-The app can generate unique 8-digit barcodes for variants that don't have one:
+The app issues real 12-digit UPC-A codes for variants, allocated sequentially from a
+permanent ledger rather than generated at random. A UPC must be used only once, ever,
+so uniqueness comes from a database constraint, not from checking Shopify for
+collisions.
 
-**Utility Functions** (`app/utils/barcode.js`)
-- `generateRandomBarcode()`: Creates random 8-digit number (10000000-99999999)
-- `checkBarcodeExists(admin, barcode)`: Verifies barcode doesn't already exist in store
-- `generateUniqueBarcode(admin)`: Loops until unique barcode found (max 10 attempts)
+**The ledger** (`prisma/schema.prisma` — `UpcAllocation` model)
+- One row per issued UPC: `upc`, `itemCode`, `shop`, `productId`, `variantId`, `replacedBarcode`
+- `itemCode` and `upc` are unique constraints — these, not any application-level
+  lock, are what guarantee a code is never issued twice
+- Rows are never deleted; a burned code (e.g. the Shopify update after allocation
+  fails) is simply never reused
 
-**Generation Process**:
-1. User clicks "Generate" button on variant without barcode
-2. Server generates random 8-digit number
-3. Checks if barcode already exists in store via GraphQL query
-4. If collision detected, tries again (up to 10 attempts)
-5. Updates variant in Shopify using `productVariantsBulkUpdate` mutation
-6. Returns new barcode to client for immediate UI update
+**Utility Functions** (`app/utils/barcode.js`, `app/utils/upc.js`)
+- `getUpcPrefix()`: Reads `UPC_PREFIX` from the environment. Throws if it is unset —
+  there is no default, because each store runs its own database and a shared or
+  missing prefix would let two stores mint the identical UPC
+- `allocateUpc({ dbClient, prefix, allocation, barcodeExists })`: Reads the highest
+  `itemCode` in the ledger, computes the next one, builds a UPC, and inserts it;
+  retries on a unique-constraint race (`P2002`) or on `barcodeExists` reporting the
+  candidate already lives in Shopify
+- `checkBarcodeExists(admin, barcode)`: A safety net for hand-typed codes the ledger
+  has never seen — not the uniqueness guarantee, the ledger is
+- `generateUniqueUpc(admin, allocation)`: Wires `allocateUpc` to the real Prisma
+  client and Shopify
+- `buildUpc(prefix, itemCode)` / `calculateCheckDigit` / `isValidUpc` / `isOurUpc`
+  (`app/utils/upc.js`): GS1 check-digit math and helpers for recognizing our own
+  codes vs. legacy or foreign barcodes
+
+**Generate vs. Replace** — two actions in `app/routes/app._index.jsx`, deliberately
+kept separate so an existing barcode is never overwritten implicitly:
+1. `generateBarcode`: only for a variant with no barcode. The server fetches the
+   variant's *live* barcode from Shopify (via `GET_VARIANT_BARCODE_QUERY`) and
+   refuses if it is non-empty — a client-supplied value is never trusted for this
+   decision, since the client's copy can be stale.
+2. `replaceBarcode`: only for a variant that already has a barcode that is not one
+   of ours (`isOurUpc`) and is not empty. Requires explicit user confirmation in the
+   UI. The live barcode read from Shopify is recorded as `replacedBarcode` in the
+   ledger.
+
+Both paths then call `generateUniqueUpc` to allocate the next code and
+`productVariantsBulkUpdate` to write it to Shopify.
 
 **Features**:
-- Collision detection prevents duplicate barcodes
+- Database-level uniqueness guarantee (unique constraints), not collision retry
 - Real-time UI updates without page reload
 - Works on both mobile and desktop views
 - Saves directly to Shopify (no manual entry needed)
-- Toast notifications show generated barcode
+- Toast notifications show the generated or replaced barcode
 
 ### Excel Export Format
 

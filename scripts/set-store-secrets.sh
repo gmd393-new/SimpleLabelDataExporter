@@ -19,7 +19,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-REQUIRED_KEYS=(FLY_APP SHOPIFY_API_KEY SHOPIFY_API_SECRET SHOPIFY_APP_URL SCOPES NODE_ENV)
+REQUIRED_KEYS=(FLY_APP SHOPIFY_API_KEY SHOPIFY_API_SECRET SHOPIFY_APP_URL SCOPES UPC_PREFIX NODE_ENV)
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT" || exit 1
@@ -109,6 +109,13 @@ if [[ "${VALUES[SHOPIFY_APP_URL]}" != https://* ]]; then
 fi
 if [[ "${VALUES[SHOPIFY_APP_URL]}" == */ ]]; then
     echo -e "${RED}✗${NC} SHOPIFY_APP_URL must not end with a trailing slash"
+    exit 1
+fi
+
+# A UPC_PREFIX that isn't a plain digit string can silently produce malformed
+# UPCs or collide with another store in unexpected ways. Require 1-10 digits.
+if [[ ! "${VALUES[UPC_PREFIX]}" =~ ^[0-9]{1,10}$ ]]; then
+    echo -e "${RED}✗${NC} UPC_PREFIX must be 1-10 digits (got: '${VALUES[UPC_PREFIX]}')"
     exit 1
 fi
 
