@@ -312,6 +312,28 @@ mint identical UPCs, because each store allocates from its own database.
 bash scripts/set-store-secrets.sh .env-<store-slug>   # includes UPC_PREFIX
 ```
 
+### 0. Manual UI verification has never been run
+
+No runtime check in a live Shopify embedded admin was performed at any point — the build
+environment had no interactive tunnel. Everything below was verified by reading code only.
+Run this against a store with three variants: one with no barcode, one with an old 8-digit
+barcode, and one already on a UPC.
+
+1. A variant with no barcode shows **Generate**; clicking it produces a 12-digit code
+   starting with the configured prefix, and the toast reads `UPC generated: …`.
+2. That variant then renders as plain text — no Legacy badge, no button.
+3. A variant with an old 8-digit barcode shows the code, a **Legacy** badge, and
+   **Replace with UPC**.
+4. Clicking Replace shows the inline confirm prompt. **Cancel** restores the prior state
+   and issues no network request.
+5. **Confirm** replaces the barcode; the toast reads `Barcode replaced with UPC: …`.
+6. `npx prisma studio` — the `UpcAllocation` row for that UPC has `replacedBarcode` set to
+   the old code.
+7. Narrow to mobile width and repeat 1 and 3–5 against the card layout, checking the
+   confirm block wraps to full card width without clipping.
+8. Confirm no blocking dialog ever appears (there is none in the code — confirmation is
+   inline — but worth a visual check inside the admin iframe).
+
 ### 1. The loader should degrade rather than throw
 
 Make the loader catch the missing-prefix error and return `upcPrefix: null`, disabling
