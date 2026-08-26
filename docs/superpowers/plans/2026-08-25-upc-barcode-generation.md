@@ -240,7 +240,7 @@ test("isOurUpc distinguishes our codes from legacy and foreign ones", () => {
 });
 ```
 
-Note `buildUpc("065240", 99999)` is asserted to equal `065240999995`; if the implementation is correct this holds, and the surrounding `isValidUpc` loop independently proves self-consistency.
+Note `buildUpc("065240", 99999)` is asserted to equal `065240999996`; the surrounding `isValidUpc` loop independently proves self-consistency across the range.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
