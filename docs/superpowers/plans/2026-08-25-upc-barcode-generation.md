@@ -1125,7 +1125,12 @@ Replace the value `<span>` and the button block at `:1022-1051` with:
                     )}
                     {variant.barcode && !isOurUpc(variant.barcode, upcPrefix) && (
                       confirmingReplaceFor === variant.id ? (
-                        <div style={{ display: "flex", gap: "6px" }}>
+                        <div style={{ display: "flex", flexDirection: "column", gap: "6px", flex: "1 1 100%" }}>
+                          <span style={{ fontSize: "12px", color: "#8a6116" }}>
+                            Replace {variant.barcode}? Any tag already printed with it
+                            will stop scanning.
+                          </span>
+                          <div style={{ display: "flex", gap: "6px" }}>
                           <button
                             onClick={() =>
                               handleReplaceBarcode(variant.id, variant.productId, variant.barcode)
@@ -1140,6 +1145,7 @@ Replace the value `<span>` and the button block at `:1022-1051` with:
                           >
                             Cancel
                           </button>
+                          </div>
                         </div>
                       ) : (
                         <button
@@ -1153,7 +1159,7 @@ Replace the value `<span>` and the button block at `:1022-1051` with:
                     )}
 ```
 
-Keep the surrounding `<div className="card-metadata-item" ...>` wrapper and its closing tags exactly as they are — only the inner value span and the button region change. On mobile the confirmation warning lives in the toast rather than the cramped card row; the confirm step itself is still required.
+Keep the surrounding `<div className="card-metadata-item" ...>` wrapper and its closing tags exactly as they are — only the inner value span and the button region change. The confirmation carries the same warning text as the desktop cell; on the narrow card it wraps to full width via `flex: "1 1 100%"`.
 
 - [ ] **Step 8: Verify build and lint**
 
