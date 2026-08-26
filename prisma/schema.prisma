@@ -45,3 +45,22 @@ model DownloadToken {
   @@index([token])
   @@index([shop])
 }
+
+/// Permanent record of every UPC ever issued.
+///
+/// Rows are never deleted. This is what makes "each UPC used only once" true even
+/// after a product is deleted from Shopify — the old approach asked Shopify whether
+/// a barcode was in use, so deleting a product silently freed its code for reuse.
+model UpcAllocation {
+  id              String   @id @default(uuid())
+  upc             String   @unique
+  itemCode        Int      @unique
+  shop            String
+  productId       String
+  variantId       String
+  replacedBarcode String?
+  createdAt       DateTime @default(now())
+
+  @@index([shop])
+  @@index([variantId])
+}
