@@ -366,7 +366,7 @@ model UpcAllocation {
 
 - [ ] **Step 2: Confirm a database is reachable**
 
-Run: `docker compose up -d`
+Run: `docker compose -f .docker/docker-compose.yml up -d`
 Then: `npx prisma migrate status`
 Expected: reports the 4 existing migrations as applied. If it cannot connect, check `DATABASE_URL` in `.env` against `.env.docker`.
 
