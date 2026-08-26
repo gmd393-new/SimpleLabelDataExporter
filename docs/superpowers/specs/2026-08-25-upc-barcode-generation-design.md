@@ -291,6 +291,36 @@ deploying it does not touch any current barcode.
 | Replace breaks already-printed tags | Never automatic — explicit action, confirmation dialog showing old → new, and a warning |
 | A failed Shopify mutation burns an item code | Accepted deliberately; burning is safe under a once-only rule, reissuing is not |
 
+## As deployed (2026-08-26)
+
+Both stores are live on this feature. **The prefixes differ per store and must stay
+distinct** — each store allocates from its own database, so a shared prefix would issue
+identical UPCs on different products.
+
+| Store | Fly app | `UPC_PREFIX` | Allocations |
+|---|---|---|---|
+| Store A | `simplelabels-prod` | `065240` | none issued |
+| Store B (thegoatstock) | `simplelabels-prod-thegoatstock` | `065241` | in active use |
+
+The store actually generating codes is **thegoatstock, on `065241`** — not the `065240`
+described elsewhere in this document. `065240` was the originally chosen value (the
+Centralia zip); `065241` was assigned to keep the two stores separate. Reviewed on
+2026-08-26 with three codes issued and deliberately kept, since Paradies requires only a
+well-formed 12-digit UPC and `065241` is one.
+
+Consequence to remember: **store A can never be moved onto `065241`**, because
+thegoatstock has already issued item codes 1–3 under it. If store A ever needs to
+generate, give it a third prefix.
+
+### Runtime verification — done
+
+Verified in the live Shopify admin on 2026-08-26 (the check that had been outstanding
+through the whole build). Three codes issued in thegoatstock: `065241000011`,
+`065241000028` (replacing legacy barcode `59988039`), `065241000035`. Check digits
+confirmed correct, sequence dense with no burned codes, and no failed Shopify writes in
+the logs. Generate and Replace both work end to end, and the ledger's `replacedBarcode`
+audit trail records overwrites as designed.
+
 ## Known follow-ups (accepted at merge, 2026-08-25)
 
 The branch was merged with these open. They were found by the final whole-branch review
