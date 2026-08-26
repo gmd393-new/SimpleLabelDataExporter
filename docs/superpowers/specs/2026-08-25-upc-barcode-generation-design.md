@@ -227,9 +227,17 @@ a secret — it is printed on every label.
 
 - Variants whose barcode fails `isOurUpc` show a subtle **Legacy** marker, so it is
   visible at a glance which items cannot yet ship to Paradies.
-- Those variants get a **Replace with UPC** control that opens a confirmation showing
-  the old code and the new one, with an explicit warning that any printed tag carrying
-  the old code will stop scanning.
+- Those variants get a **Replace with UPC** control that requires a confirmation step
+  showing the current code and an explicit warning that any printed tag carrying it will
+  stop scanning.
+
+  The confirmation shows the **old** code only. The new UPC cannot be displayed before
+  confirming, because allocating it is what makes it exist — offering a preview would
+  burn an item code every time someone cancelled. The new code appears in the success
+  toast instead.
+
+  Confirmation is inline (the cell swaps to a confirm/cancel prompt), not
+  `window.confirm`, which renders poorly inside the embedded admin iframe.
 - Both the desktop table (`app._index.jsx:1023-1050`) and the mobile card layout
   (`:1235-1253`) render the barcode cell and need the same treatment.
 
