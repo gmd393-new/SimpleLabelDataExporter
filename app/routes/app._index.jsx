@@ -5,7 +5,8 @@ import { authenticate } from "../shopify.server";
 import { PRODUCTS_QUERY, UPDATE_VARIANT_BARCODE_MUTATION } from "../graphql/products";
 import crypto from "crypto";
 import db from "../db.server";
-import { generateUniqueBarcode } from "../utils/barcode";
+import { generateUniqueUpc, getUpcPrefix } from "../utils/barcode";
+import { isOurUpc } from "../utils/upc";
 
 /**
  * Loader: Fetches products and variants from Shopify Admin API
@@ -105,15 +106,17 @@ export async function loader({ request }) {
     hasNextPage: data.data.products.pageInfo.hasNextPage,
     searchQuery,
     statusFilter: validStatuses.map(s => s.toLowerCase()).join(','),
+    upcPrefix: getUpcPrefix(),
   };
 }
 
 /**
- * Action: Handles both export and barcode generation actions
+ * Action: Handles export, barcode generation, and barcode replacement
  *
  * Actions:
  * 1. "export" - Creates a one-time download token for mobile-compatible file exports
- * 2. "generateBarcode" - Generates and updates a unique barcode for a variant
+ * 2. "generateBarcode" - Allocates a UPC for a variant that has no barcode
+ * 3. "replaceBarcode" - Allocates a UPC to overwrite a non-UPC barcode, on request
  */
 export async function action({ request }) {
   const { session, admin } = await authenticate.admin(request);
@@ -121,35 +124,50 @@ export async function action({ request }) {
   const formData = await request.formData();
   const actionType = formData.get("actionType");
 
-  // Handle barcode generation
-  if (actionType === "generateBarcode") {
+  // Handle barcode generation and replacement.
+  //
+  // These share an implementation but differ in one important way: generate only
+  // ever fills an empty barcode, while replace deliberately overwrites an existing
+  // one. Replace is separate precisely so that overwriting is never implicit —
+  // shelf tags carrying the old code are already printed and will stop scanning.
+  if (actionType === "generateBarcode" || actionType === "replaceBarcode") {
     const variantId = formData.get("variantId");
     const productId = formData.get("productId");
+    const currentBarcode = formData.get("currentBarcode") || "";
 
     if (!variantId || !productId) {
       return { error: "No variant ID or product ID provided" };
     }
 
-    try {
-      // Generate a unique barcode
-      const newBarcode = await generateUniqueBarcode(admin);
+    const prefix = getUpcPrefix();
 
-      // Update the variant in Shopify using bulk update mutation
+    if (actionType === "generateBarcode" && currentBarcode) {
+      return {
+        error: "This variant already has a barcode. Use Replace with UPC instead.",
+      };
+    }
+
+    if (actionType === "replaceBarcode" && isOurUpc(currentBarcode, prefix)) {
+      return { error: "This variant already has a current UPC." };
+    }
+
+    try {
+      const newBarcode = await generateUniqueUpc(admin, {
+        shop: session.shop,
+        productId,
+        variantId,
+        replacedBarcode: actionType === "replaceBarcode" ? currentBarcode : null,
+      });
+
       const response = await admin.graphql(UPDATE_VARIANT_BARCODE_MUTATION, {
         variables: {
           productId: productId,
-          variants: [
-            {
-              id: variantId,
-              barcode: newBarcode,
-            },
-          ],
+          variants: [{ id: variantId, barcode: newBarcode }],
         },
       });
 
       const data = await response.json();
 
-      // Check for errors
       if (data.data.productVariantsBulkUpdate.userErrors.length > 0) {
         const errorMessages = data.data.productVariantsBulkUpdate.userErrors
           .map((e) => e.message)
@@ -157,15 +175,14 @@ export async function action({ request }) {
         return { error: `Failed to update barcode: ${errorMessages}` };
       }
 
-      // Return success with new barcode
       return {
         success: true,
-        actionType: "generateBarcode",
+        actionType,
         variantId,
         barcode: newBarcode,
       };
     } catch (error) {
-      console.error("Barcode generation error:", error);
+      console.error("UPC generation error:", error);
       return { error: error.message || "Failed to generate barcode" };
     }
   }
