@@ -2,7 +2,11 @@ import { useLoaderData, useSubmit, useFetcher } from "react-router";
 import { useState, useEffect, useRef } from "react";
 import { useAppBridge } from "@shopify/app-bridge-react";
 import { authenticate } from "../shopify.server";
-import { PRODUCTS_QUERY, UPDATE_VARIANT_BARCODE_MUTATION } from "../graphql/products";
+import {
+  PRODUCTS_QUERY,
+  UPDATE_VARIANT_BARCODE_MUTATION,
+  GET_VARIANT_BARCODE_QUERY,
+} from "../graphql/products";
 import crypto from "crypto";
 import db from "../db.server";
 import { generateUniqueUpc, getUpcPrefix } from "../utils/barcode";
@@ -134,7 +138,11 @@ export async function action({ request }) {
   if (actionType === "generateBarcode" || actionType === "replaceBarcode") {
     const variantId = formData.get("variantId");
     const productId = formData.get("productId");
-    const currentBarcode = formData.get("currentBarcode") || "";
+    // Informational only — a stale tab, another user, or a CSV import could
+    // have changed the variant since this page loaded. The overwrite guard
+    // below must never be decided from client-supplied data; it always asks
+    // Shopify for the live value instead.
+    const clientBarcode = formData.get("currentBarcode") || "";
 
     if (!variantId || !productId) {
       return { error: "No variant ID or product ID provided" };
@@ -142,14 +150,34 @@ export async function action({ request }) {
 
     const prefix = getUpcPrefix();
 
-    if (actionType === "generateBarcode" && currentBarcode) {
+    const variantResponse = await admin.graphql(GET_VARIANT_BARCODE_QUERY, {
+      variables: { id: variantId },
+    });
+    const variantData = await variantResponse.json();
+    const liveBarcode = variantData.data?.productVariant?.barcode || "";
+
+    if (liveBarcode !== clientBarcode) {
+      console.warn(
+        `Stale barcode for variant ${variantId}: client had ${JSON.stringify(clientBarcode)}, Shopify has ${JSON.stringify(liveBarcode)}`
+      );
+    }
+
+    if (actionType === "generateBarcode" && liveBarcode) {
       return {
-        error: "This variant already has a barcode. Use Replace with UPC instead.",
+        error:
+          "This variant already has a barcode. Reload the page and use Replace with UPC instead.",
       };
     }
 
-    if (actionType === "replaceBarcode" && isOurUpc(currentBarcode, prefix)) {
-      return { error: "This variant already has a current UPC." };
+    if (actionType === "replaceBarcode") {
+      if (isOurUpc(liveBarcode, prefix)) {
+        return { error: "This variant already has a current UPC." };
+      }
+      if (!liveBarcode) {
+        return {
+          error: "This variant has no barcode to replace. Reload the page and use Generate instead.",
+        };
+      }
     }
 
     try {
@@ -157,7 +185,7 @@ export async function action({ request }) {
         shop: session.shop,
         productId,
         variantId,
-        replacedBarcode: actionType === "replaceBarcode" ? currentBarcode : null,
+        replacedBarcode: actionType === "replaceBarcode" ? liveBarcode : null,
       });
 
       const response = await admin.graphql(UPDATE_VARIANT_BARCODE_MUTATION, {

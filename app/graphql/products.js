@@ -63,6 +63,23 @@ export const CHECK_BARCODE_EXISTS_QUERY = `#graphql
 `;
 
 /**
+ * Query to fetch a single variant's current barcode directly from Shopify.
+ *
+ * Used as the source of truth for overwrite-guard decisions: the client's own
+ * copy of a variant's barcode can go stale (another tab, the Shopify admin, a
+ * CSV import), so the server must not trust a client-supplied value when
+ * deciding whether it is safe to generate or replace a barcode.
+ */
+export const GET_VARIANT_BARCODE_QUERY = `#graphql
+  query GetVariantBarcode($id: ID!) {
+    productVariant(id: $id) {
+      id
+      barcode
+    }
+  }
+`;
+
+/**
  * Mutation to update a product variant's barcode
  */
 export const UPDATE_VARIANT_BARCODE_MUTATION = `#graphql
